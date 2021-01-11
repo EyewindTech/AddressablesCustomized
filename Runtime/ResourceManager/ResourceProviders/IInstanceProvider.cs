@@ -8,14 +8,14 @@ namespace UnityEngine.ResourceManagement.ResourceProviders
     /// <summary>
     /// Class that contains properties to apply to instantiated objects.
     /// </summary>
-    public struct InstantiationParameters
+    public readonly struct InstantiationParameters
     {
-        Vector3 m_Position;
-        Quaternion m_Rotation;
-        Transform m_Parent;
-        bool m_InstantiateInWorldPosition;
-        bool m_SetPositionRotation;
-        Action<Object> m_prevCallback;
+        readonly Vector3 m_Position;
+        readonly Quaternion m_Rotation;
+        readonly Transform m_Parent;
+        readonly bool m_InstantiateInWorldPosition;
+        readonly bool m_SetPositionRotation;
+        readonly OverrideInstantiate m_OverrideInstantiate;
 
         /// <summary>
         /// Position in world space to instantiate object.
@@ -49,7 +49,23 @@ namespace UnityEngine.ResourceManagement.ResourceProviders
             m_Parent = parent;
             m_InstantiateInWorldPosition = instantiateInWorldSpace;
             m_SetPositionRotation = false;
-            m_prevCallback = null;
+            m_OverrideInstantiate = null;
+        }
+        
+        /// <summary>
+        /// Create a new InstantationParameters class that will set the parent transform and use the prefab transform.
+        /// </summary>
+        /// <param name="parent">Transform to set as the parent of the instantiated object.</param>
+        /// <param name="instantiateInWorldSpace">Flag to tell the IInstanceProvider whether to set the position and rotation on new instances.</param>
+        /// <param name="overrideInstantiate">Override instantiate method.</param>
+        public InstantiationParameters(Transform parent, bool instantiateInWorldSpace, OverrideInstantiate overrideInstantiate)
+        {
+            m_Position = Vector3.zero;
+            m_Rotation = Quaternion.identity;
+            m_Parent = parent;
+            m_InstantiateInWorldPosition = instantiateInWorldSpace;
+            m_SetPositionRotation = false;
+            m_OverrideInstantiate = overrideInstantiate;
         }
 
         /// <summary>
@@ -65,25 +81,8 @@ namespace UnityEngine.ResourceManagement.ResourceProviders
             m_Parent = parent;
             m_InstantiateInWorldPosition = false;
             m_SetPositionRotation = true;
-            m_prevCallback = null;
+            m_OverrideInstantiate = null;
         }
-
-        /// <summary>
-        /// Create a new InstantationParameters class that will set the position, rotation, and Transform parent of the instance.
-        /// </summary>
-        /// <param name="position">Position relative to the parent to set on the instance.</param>
-        /// <param name="rotation">Rotation relative to the parent to set on the instance.</param>
-        /// <param name="parent">Transform to set as the parent of the instantiated object.</param>
-        /// <param name="prevCallback">Execute action before instantiated object.</param>
-        public InstantiationParameters(Vector3 position, Quaternion rotation, Transform parent, Action<Object> prevCallback)
-        {
-            m_Position = position;
-            m_Rotation = rotation;
-            m_Parent = parent;
-            m_InstantiateInWorldPosition = false;
-            m_SetPositionRotation = true;
-            m_prevCallback = prevCallback;
-        } 
 
         /// <summary>
         /// Instantiate an object with the parameters of this object.
@@ -93,11 +92,22 @@ namespace UnityEngine.ResourceManagement.ResourceProviders
         /// <returns>Returns the instantiated object.</returns>
         public TObject Instantiate<TObject>(TObject source) where TObject : Object
         {
-            if(m_prevCallback != null)
+            if(m_OverrideInstantiate != null)
             {
-                m_prevCallback(source);
+                return m_OverrideInstantiate.Instantiate<TObject>(this, source);
             }
-
+            
+            return InstantiateOfficial(source);
+        }
+        
+        /// <summary>
+        /// Instantiate an object with the parameters of this object.
+        /// </summary>
+        /// <typeparam name="TObject">Object type. This type must be of type UnityEngine.Object.</typeparam>
+        /// <param name="source">Object to instantiate.</param>
+        /// <returns>Returns the instantiated object.</returns>
+        public TObject InstantiateOfficial<TObject>(TObject source) where TObject : Object
+        {
             TObject result;
             if (m_Parent == null)
             {
@@ -115,6 +125,11 @@ namespace UnityEngine.ResourceManagement.ResourceProviders
             }
             return result;
         }
+    }
+    
+    public interface OverrideInstantiate
+    {
+        TObject Instantiate<TObject>(InstantiationParameters parameters, TObject source) where TObject : Object;
     }
 
     /// <summary>
