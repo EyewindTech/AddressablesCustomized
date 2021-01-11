@@ -93,9 +93,9 @@ namespace UnityEngine.ResourceManagement.ResourceProviders
         /// <returns>Returns the instantiated object.</returns>
         public TObject Instantiate<TObject>(TObject source) where TObject : Object
         {
-            if(prevCallback != null)
+            if(m_prevCallback != null)
             {
-                prevCallback(source);
+                m_prevCallback(source);
             }
 
             TObject result;
