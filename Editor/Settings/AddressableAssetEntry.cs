@@ -22,6 +22,7 @@ namespace UnityEditor.AddressableAssets.Settings
         string AssetPath { get; }
         string address { get; set; }
         bool IsInResources { get; set; }
+        HashSet<string> labels { get; }
     }
 
     internal struct ImplicitAssetEntry : IReferenceEntryData
@@ -29,6 +30,7 @@ namespace UnityEditor.AddressableAssets.Settings
         public string AssetPath { get; set; }
         public string address { get; set; }
         public bool IsInResources { get; set; }
+        public HashSet<string> labels { get; set;}
     }
 
     /// <summary>
@@ -335,7 +337,6 @@ namespace UnityEditor.AddressableAssets.Settings
             }
         }
 
-        [SerializeField]
         private UnityEngine.Object m_MainAsset;
         /// <summary>
         /// The main asset object for this entry.
@@ -361,9 +362,7 @@ namespace UnityEditor.AddressableAssets.Settings
             }
         }
 
-        [SerializeField]
         private UnityEngine.Object m_TargetAsset;
-
         /// <summary>
         /// The asset object for this entry.
         /// </summary>
@@ -419,8 +418,9 @@ namespace UnityEditor.AddressableAssets.Settings
         /// The asset load path.  This is used to determine the internal id of resource locations.
         /// </summary>
         /// <param name="isBundled">True if the asset will be contained in an asset bundle.</param>
+        /// <param name="otherLoadPaths">The internal ids of the asset, typically shortened versions of the asset's GUID.</param>
         /// <returns>Return the runtime path that should be used to load this entry.</returns>
-        internal string GetAssetLoadPath(bool isBundled, HashSet<string> otherLoadPaths)
+        public string GetAssetLoadPath(bool isBundled, HashSet<string> otherLoadPaths)
         {
             if (!IsScene)
             {
@@ -591,9 +591,9 @@ namespace UnityEditor.AddressableAssets.Settings
                     {
                         entry.IsInResources = e.IsInResources;
                         foreach (var l in e.labels)
-                            entry.SetLabel(l, true, false);
+                            entry.SetLabel(l, true, false, false);
                         foreach (var l in m_Labels)
-                            entry.SetLabel(l, true, false);
+                            entry.SetLabel(l, true, false, false);
                         if (entryFilter == null || entryFilter(entry))
                             assets.Add(entry);
                     }
@@ -769,7 +769,8 @@ namespace UnityEditor.AddressableAssets.Settings
                     {
                         address = relativeAddress,
                         AssetPath = fi,
-                        IsInResources = IsInResources
+                        IsInResources = IsInResources,
+                        labels = new HashSet<string>(m_Labels)
                     };
 
                     refEntries.Add(reference);
@@ -781,12 +782,36 @@ namespace UnityEditor.AddressableAssets.Settings
                 if (col != null)
                 {
                     foreach (var e in col.Entries)
-                        refEntries.Add(e);
+                    {
+                        refEntries.Add(new ImplicitAssetEntry()
+                        {
+                            address = e.address,
+                            AssetPath = e.AssetPath,
+                            IsInResources = e.IsInResources,
+                            labels = new HashSet<string>(e.labels.Union(this.labels))
+                        });
+                    }
                 }
             }
             else
             {
                 refEntries.Add(this);
+            }
+        }
+
+        internal void GatherImplicitEntries(List<AddressableAssetEntry> implicitEntries)
+        {
+            var path = AssetPath;
+            if (string.IsNullOrEmpty(path))
+                return;
+
+            if (AssetDatabase.IsValidFolder(path))
+            {
+                GatherFolderEntries(implicitEntries, true, null);
+            }
+            else if (MainAssetType == typeof(AddressableAssetEntryCollection))
+            {
+                GatherAssetEntryCollectionEntries(implicitEntries, null);
             }
         }
 
@@ -850,8 +875,14 @@ namespace UnityEditor.AddressableAssets.Settings
             if (keyList.Count == 0)
                 return;
 
+            //The asset may have previously been invalid. Since then, it may have been re-imported.
+            //This can occur in particular when using ScriptedImporters with complex, multi-step behavior.
+            //Double-check the type here in case the asset has been imported correctly after we cached its type.
+            if (MainAssetType == typeof(DefaultAsset))
+                m_cachedMainAssetType = null;
+
             Type mainType = AddressableAssetUtility.MapEditorTypeToRuntimeType(MainAssetType, false);
-            if (mainType == null && !IsInResources)
+            if ((mainType == null || mainType == typeof(DefaultAsset)) && !IsInResources)
             {
                 var t = MainAssetType;
                 Debug.LogWarningFormat("Type {0} is in editor assembly {1}.  Asset location with internal id {2} will be stripped.", t.Name, t.Assembly.FullName, assetPath);
@@ -869,7 +900,7 @@ namespace UnityEditor.AddressableAssets.Settings
                 foreach (var t in GatherSubObjectTypes(ids, guid))
                     entries.Add(new ContentCatalogDataEntry(t, assetPath, providerType, keyList, dependencies, extraData));
             }
-            else if (mainType != null)
+            else if (mainType != null && mainType != typeof(DefaultAsset))
             {
                 entries.Add(new ContentCatalogDataEntry(mainType, assetPath, providerType, keyList, dependencies, extraData));
             }
@@ -886,7 +917,7 @@ namespace UnityEditor.AddressableAssets.Settings
                     if (typeof(Component).IsAssignableFrom(objType))
                         continue;
                     Type rtType = AddressableAssetUtility.MapEditorTypeToRuntimeType(objType, false);
-                    if (rtType != null && !typesSeen.Contains(rtType))
+                    if (rtType != null && rtType != typeof(DefaultAsset) && !typesSeen.Contains(rtType))
                     {
                         yield return rtType;
                         typesSeen.Add(rtType);

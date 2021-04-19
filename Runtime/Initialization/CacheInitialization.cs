@@ -70,11 +70,26 @@ namespace UnityEngine.AddressableAssets.Initialization
         class CacheInitOp : AsyncOperationBase<bool>, IUpdateReceiver
         {
             private Func<bool> m_Callback;
+
+#if ENABLE_CACHING
             private bool m_UpdateRequired = true;
+#endif //ENABLE_CACHING
 
             public void Init(Func<bool> callback)
             {
                 m_Callback = callback;
+            }
+
+            internal override bool InvokeWaitForCompletion()
+            {
+#if ENABLE_CACHING
+                m_RM?.Update(Time.deltaTime);
+                if (!IsDone)
+                    InvokeExecute();
+                return IsDone;
+#else
+                return true;
+#endif
             }
 
             public void Update(float unscaledDeltaTime)
