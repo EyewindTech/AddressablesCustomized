@@ -38,12 +38,16 @@ namespace UnityEditor.AddressableAssets.Settings
             return null;
         }
 
-        internal override bool InvokeWaitForCompletion()
+        ///<inheritdoc />
+        protected override bool InvokeWaitForCompletion()
         {
-            m_RM?.Update(Time.deltaTime);
+            if (IsDone)
+                return true;
+
+            m_RM?.Update(Time.unscaledDeltaTime);
             if(!HasExecuted)
                 InvokeExecute();
-            return IsDone;
+            return true;
         }
 
         protected override void Execute()
@@ -76,6 +80,7 @@ namespace UnityEditor.AddressableAssets.Settings
             m_addressables.ResourceManager.ResourceProviders.Add(new AtlasSpriteProvider());
             m_addressables.ResourceManager.ResourceProviders.Add(new ContentCatalogProvider(m_addressables.ResourceManager));
             WebRequestQueue.SetMaxConcurrentRequests(m_settings.MaxConcurrentWebRequests);
+            m_addressables.CatalogRequestsTimeout = m_settings.CatalogRequestsTimeout;
 
             if (m_settings.InitializationObjects.Count == 0)
             {

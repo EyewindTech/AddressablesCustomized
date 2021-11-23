@@ -13,6 +13,7 @@ using UnityEngine.ResourceManagement.AsyncOperations;
 using UnityEngine.ResourceManagement.ResourceLocations;
 using UnityEngine.ResourceManagement.ResourceProviders;
 using UnityEngine.TestTools;
+using UnityEngine.AddressableAssets.ResourceLocators;
 
 namespace UnityEngine.AddressableAssets.ResourceProviders.Tests
 {
@@ -134,6 +135,53 @@ namespace UnityEngine.AddressableAssets.ResourceProviders.Tests
         }
 
         [Test]
+        public void DetermineIdToLoad_IfDisableContentCatalogUpdateTrue_ForcesLocalId()
+        {
+            var contentCatalogOp = new ContentCatalogProvider.InternalOp();
+
+            IResourceLocation[] dependencies = new IResourceLocation[(int)ContentCatalogProvider.DependencyHashIndex.Count];
+
+            dependencies[(int)ContentCatalogProvider.DependencyHashIndex.Remote] = new ResourceLocationBase(string.Empty, k_RemoteLocationId, typeof(ContentCatalogProvider).FullName, typeof(object));
+            dependencies[(int)ContentCatalogProvider.DependencyHashIndex.Cache] = new ResourceLocationBase(string.Empty, k_CacheLocationId, typeof(ContentCatalogProvider).FullName, typeof(object));
+
+            var location = new ResourceLocationBase(k_LocationName, k_LocationId, typeof(ContentCatalogProvider).FullName, typeof(object), dependencies);
+            var loadedId = contentCatalogOp.DetermineIdToLoad(location, new List<object> { "hash", "" }, true);
+
+            Assert.AreEqual(k_LocationId, loadedId);
+        }
+
+        [Test]
+        public void DetermineIdToLoad_IfDisableContentCatalogUpdateTrue_ForcesCachedIdWhenLocalHashExists()
+        {
+            var contentCatalogOp = new ContentCatalogProvider.InternalOp();
+
+            IResourceLocation[] dependencies = new IResourceLocation[(int)ContentCatalogProvider.DependencyHashIndex.Count];
+
+            dependencies[(int)ContentCatalogProvider.DependencyHashIndex.Remote] = new ResourceLocationBase(string.Empty, k_RemoteLocationId, typeof(ContentCatalogProvider).FullName, typeof(object));
+            dependencies[(int)ContentCatalogProvider.DependencyHashIndex.Cache] = new ResourceLocationBase(string.Empty, k_CacheLocationId, typeof(ContentCatalogProvider).FullName, typeof(object));
+
+            var location = new ResourceLocationBase(k_LocationName, k_LocationId, typeof(ContentCatalogProvider).FullName, typeof(object), dependencies);
+            var loadedId = contentCatalogOp.DetermineIdToLoad(location, new List<object> { "hash", "local" }, true);
+            Assert.AreEqual(k_CacheLocationId, loadedId);
+        }
+
+        [Test]
+        public void DetermineIdToLoad_SetsLocalHash_WhenDisableContentCatalogIsTrue_AndNoLocalHashExists()
+        {
+            var contentCatalogOp = new ContentCatalogProvider.InternalOp();
+
+            IResourceLocation[] dependencies = new IResourceLocation[(int)ContentCatalogProvider.DependencyHashIndex.Count];
+
+            dependencies[(int)ContentCatalogProvider.DependencyHashIndex.Remote] = new ResourceLocationBase(string.Empty, k_RemoteLocationId, typeof(ContentCatalogProvider).FullName, typeof(object));
+            dependencies[(int)ContentCatalogProvider.DependencyHashIndex.Cache] = new ResourceLocationBase(string.Empty, k_CacheLocationId, typeof(ContentCatalogProvider).FullName, typeof(object));
+
+            var location = new ResourceLocationBase(k_LocationName, k_LocationId, typeof(ContentCatalogProvider).FullName, typeof(object), dependencies);
+            Assert.IsTrue(string.IsNullOrEmpty(contentCatalogOp.m_LocalHashValue));
+            var loadedId = contentCatalogOp.DetermineIdToLoad(location, new List<object> { "hash", "" }, true);
+            Assert.IsFalse(string.IsNullOrEmpty(contentCatalogOp.m_LocalHashValue));
+        }
+
+        [Test]
         public void DetermineIdToLoad_IfOnlineMismatchesCache_ReturnsRemoteId()
         {
             var contentCatalogOp = new ContentCatalogProvider.InternalOp();
@@ -161,7 +209,7 @@ namespace UnityEngine.AddressableAssets.ResourceProviders.Tests
         {
             Assert.Throws(exceptionType, () => new ContentCatalogProvider.InternalOp.BundledCatalog(path));
         }
-        
+
         [UnityTest]
         [Ignore("https://jira.unity3d.com/browse/ADDR-1451")]
         public IEnumerator BundledCatalog_LoadCatalogFromBundle_InvalidBundleFileFormat_ShouldFail()
@@ -171,13 +219,11 @@ namespace UnityEngine.AddressableAssets.ResourceProviders.Tests
 
             var bytes = new byte[] { 1, 2, 3, 4, 5, 6 };
             File.WriteAllBytes(bundleFilePath, bytes);
-            
-#if UNITY_2019_4_OR_NEWER
+
             LogAssert.Expect(LogType.Error, new Regex("Failed to read data for the AssetBundle", RegexOptions.IgnoreCase));
-#endif
-            
+
             LogAssert.Expect(LogType.Error, new Regex("Unable to load dependent " +
-                                            $"bundle from location :", RegexOptions.IgnoreCase));
+                $"bundle from location :", RegexOptions.IgnoreCase));
 
             var bundledCatalog = new ContentCatalogProvider.InternalOp.BundledCatalog(bundleFilePath);
             bundledCatalog.LoadCatalogFromBundleAsync();
@@ -191,7 +237,7 @@ namespace UnityEngine.AddressableAssets.ResourceProviders.Tests
         }
 
         [UnityTest]
-        public IEnumerator BundledCatalog_LoadCatalogFromBundle_ShouldLoadCatalogAndUnloadResources()
+        public IEnumerator BundledCatalog_WhenCatalogIsLocal_LoadCatalogFromBundle_ShouldLoadCatalogAndUnloadResources()
         {
             var bundleFilePath = Path.Combine(Addressables.RuntimePath, m_RuntimeCatalogFilename);
 
@@ -207,6 +253,41 @@ namespace UnityEngine.AddressableAssets.ResourceProviders.Tests
 
             Assert.IsTrue(bundledCatalog.OpIsSuccess);
             Assert.Null(bundledCatalog.m_CatalogAssetBundle);
+        }
+
+        [UnityTest]
+        public IEnumerator BundledCatalog_WhenCatalogIsRemote_LoadCatalogFromBundle_ShouldLoadCatalogAndUnloadResources()
+        {
+            string localBundleFilePath = Path.Combine(Addressables.RuntimePath, m_RuntimeCatalogFilename);
+            string bundleFilePath = "file:///" + Path.GetFullPath(localBundleFilePath);
+
+            var bundledCatalog = new ContentCatalogProvider.InternalOp.BundledCatalog(bundleFilePath);
+            bundledCatalog.LoadCatalogFromBundleAsync();
+            bundledCatalog.OnLoaded += catalogData =>
+            {
+                Assert.NotNull(catalogData);
+                Assert.AreEqual(ResourceManagerRuntimeData.kCatalogAddress, catalogData.ProviderId);
+            };
+
+            yield return new WaitWhile(() => bundledCatalog.OpInProgress);
+
+            Assert.IsTrue(bundledCatalog.OpIsSuccess);
+            Assert.Null(bundledCatalog.m_CatalogAssetBundle);
+        }
+
+        [UnityTest]
+        public IEnumerator BundledCatalog_WhenRemoteCatalogDoesNotExist_LoadCatalogFromBundle_LogsErrorAndOpFails()
+        {
+            string bundleFilePath = "file:///doesnotexist.bundle";
+
+            var bundledCatalog = new ContentCatalogProvider.InternalOp.BundledCatalog(bundleFilePath);
+            bundledCatalog.LoadCatalogFromBundleAsync();
+
+            LogAssert.Expect(LogType.Error, $"Unable to load dependent bundle from location : {bundleFilePath}");
+
+            yield return new WaitWhile(() => bundledCatalog.OpInProgress);
+
+            Assert.IsFalse(bundledCatalog.OpIsSuccess);
         }
 
         [UnityTest]
@@ -255,11 +336,37 @@ namespace UnityEngine.AddressableAssets.ResourceProviders.Tests
             Assert.AreEqual(2, timesCalled);
             Assert.IsTrue(bundledCatalog.OpIsSuccess);
         }
-        
+
         [Test]
         public void ContentCatalogProvider_InternalOp_LoadCatalog_InvalidId_Throws()
         {
-            Assert.Throws<NullReferenceException>(() => new ContentCatalogProvider.InternalOp().LoadCatalog("fakeId", false,false));
+            Assert.Throws<NullReferenceException>(() => new ContentCatalogProvider.InternalOp().LoadCatalog("fakeId", false));
+        }
+
+        [TestCase("http://127.0.0.1/catalog.json", false)]
+        [TestCase("http://127.0.0.1/catalog.bundle", true)]
+        public void BundledCatalog_WhenRequestingRemoteCatalog_CanLoadCatalogFromBundle_ReturnsExpectedResult(string internalId, bool result)
+        {
+            var loc = new ResourceLocationBase(internalId, internalId, typeof(ContentCatalogProvider).FullName, typeof(IResourceLocator));
+            ProviderOperation<Object> op = new ProviderOperation<Object>();
+            op.Init(m_Addressables.ResourceManager, null, loc, new AsyncOperationHandle<IList<AsyncOperationHandle>>());
+            ProvideHandle handle = new ProvideHandle(m_Addressables.ResourceManager, op);
+
+            bool loadCatalogFromLocalBundle = new ContentCatalogProvider.InternalOp().CanLoadCatalogFromBundle(internalId, handle.Location);
+            Assert.AreEqual(result, loadCatalogFromLocalBundle);
+        }
+
+        [Test]
+        public void BundledCatalog_WhenRequestingLocalCatalog_CanLoadCatalogFromBundle_ReturnsTrue()
+        {
+            string internalId = Path.Combine(Addressables.RuntimePath, m_RuntimeCatalogFilename);
+            var loc = new ResourceLocationBase(internalId, internalId, typeof(ContentCatalogProvider).FullName, typeof(IResourceLocator));
+            ProviderOperation<Object> op = new ProviderOperation<Object>();
+            op.Init(m_Addressables.ResourceManager, null, loc, new AsyncOperationHandle<IList<AsyncOperationHandle>>());
+            ProvideHandle handle = new ProvideHandle(m_Addressables.ResourceManager, op);
+
+            bool loadCatalogFromLocalBundle = new ContentCatalogProvider.InternalOp().CanLoadCatalogFromBundle(internalId, handle.Location);
+            Assert.IsTrue(loadCatalogFromLocalBundle);
         }
     }
 }

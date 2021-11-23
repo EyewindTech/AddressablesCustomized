@@ -159,7 +159,7 @@ namespace UnityEditor.AddressableAssets.Tests
             entry.m_cachedMainAssetType = typeof(DefaultAsset);
 
             //Test
-            entry.CreateCatalogEntriesInternal(new List<ContentCatalogDataEntry>(), false, "fakeProvider", new List<object>(), null, new Dictionary<GUID, AssetLoadInfo>()
+            entry.CreateCatalogEntries(new List<ContentCatalogDataEntry>(), false, "fakeProvider", new List<object>(), null, new Dictionary<GUID, AssetLoadInfo>()
             {
                 { new GUID(guid), new AssetLoadInfo() {includedObjects = new List<ObjectIdentifier>()} }
             },
@@ -268,6 +268,52 @@ namespace UnityEditor.AddressableAssets.Tests
             foreach (var entry in entries)
             {
                 Assert.IsTrue(subObjects.Contains(entry.TargetAsset));
+            }
+        }
+        
+        [Test]
+        public void WhenGettingFolderSubEntry_OnlyReturnsIfValidSubEntry()
+        {
+            AddressableAssetEntry mainFolderEntry = null;
+            AddressableAssetEntry subFolderEntry = null;
+            string testAssetFolder = GetAssetPath("TestFolder");
+            
+            try
+            {
+                //Setup
+                string testAssetSubFolder = Path.Combine(testAssetFolder, "SubFolder");
+
+                string mainPrefabPath = Path.Combine(testAssetFolder, "mainFolder.prefab").Replace('\\', '/');
+                string subPrefabPath = Path.Combine(testAssetSubFolder, "subFolder.prefab").Replace('\\', '/');
+
+                Directory.CreateDirectory(testAssetFolder);
+                PrefabUtility.SaveAsPrefabAsset(new GameObject("mainFolderAsset"), mainPrefabPath);
+
+                Directory.CreateDirectory(testAssetSubFolder);
+                PrefabUtility.SaveAsPrefabAsset(new GameObject("subFolderAsset"), subPrefabPath);
+
+                string mainFolderGuid = AssetDatabase.AssetPathToGUID(testAssetFolder);
+                string subFolderGuid = AssetDatabase.AssetPathToGUID(testAssetSubFolder);
+                mainFolderEntry = Settings.CreateOrMoveEntry(mainFolderGuid, m_testGroup, false);
+                subFolderEntry = Settings.CreateOrMoveEntry(subFolderGuid, m_testGroup, false);
+
+                //Test
+                var entry = mainFolderEntry.GetFolderSubEntry(mainPrefabPath);
+                Assert.IsNotNull(entry, "Prefab in main folder is expected to be valid subAsset of main folder.");
+                entry = mainFolderEntry.GetFolderSubEntry(subPrefabPath);
+                Assert.IsNull(entry, "Prefab in addressable sub folder is not expected to be valid subAsset of main folder.");
+
+                entry = subFolderEntry.GetFolderSubEntry(mainPrefabPath);
+                Assert.IsNull(entry, "Prefab in main folder is not expected to be valid subAsset of sub folder.");
+                entry = subFolderEntry.GetFolderSubEntry(subPrefabPath);
+                Assert.IsNotNull(entry, "Prefab in addressable sub folder is expected to be valid subAsset of sub folder.");
+            }
+            finally
+            {
+                //Cleanup
+                Settings.RemoveAssetEntry(mainFolderEntry, false);
+                Settings.RemoveAssetEntry(subFolderEntry, false);
+                Directory.Delete(testAssetFolder, true);
             }
         }
 
@@ -572,41 +618,6 @@ namespace UnityEditor.AddressableAssets.Tests
         }
 
         [Test]
-        public void GatherAllAssetReferenceDrawableEntries_AddsAllEntries_FromAddressableAssetEntryCollection()
-        {
-            //Setup
-            string testAssetFolder = GetAssetPath("TestFolder");
-            string collectionPath = Path.Combine(testAssetFolder, "collection.asset").Replace('\\', '/');
-            Directory.CreateDirectory(testAssetFolder);
-
-            var collection = ScriptableObject.CreateInstance<AddressableAssetEntryCollection>();
-            string guid = "12345698655";
-            AddressableAssetEntry entry = Settings.CreateOrMoveEntry(guid, m_testGroup, false);
-            entry.m_cachedAssetPath = "TestPath";
-            collection.Entries.Add(entry);
-
-            AssetDatabase.CreateAsset(collection, collectionPath);
-
-            string collectionGuid = "CollectionGuid";
-            AddressableAssetEntry collectionEntry = Settings.CreateOrMoveEntry(collectionGuid, m_testGroup, false);
-            collectionEntry.m_cachedMainAssetType = typeof(AddressableAssetEntryCollection);
-            collectionEntry.m_cachedAssetPath = collectionPath;
-
-            //Test
-            List<IReferenceEntryData> results = new List<IReferenceEntryData>();
-            collectionEntry.GatherAllAssetReferenceDrawableEntries(results, Settings);
-
-            //Assert
-            Assert.AreEqual(1, results.Count);
-            Assert.AreEqual(entry.AssetPath, results[0].AssetPath);
-
-            //Cleanup
-            Directory.Delete(testAssetFolder, true);
-            Settings.RemoveAssetEntry(guid, false);
-            Settings.RemoveAssetEntry(collectionGuid, false);
-        }
-
-        [Test]
         public void GatherResourcesEntries_GathersAllResourceEntries_IncludingLowercase()
         {
             var resourcePath = GetAssetPath("Resources");
@@ -665,6 +676,7 @@ namespace UnityEditor.AddressableAssets.Tests
             Settings.RemoveAssetEntry(folderEntry, false);
         }
 
+#pragma warning disable 0618
         [Test]
         public void GatherImplicitAssets_ReturnsEntriesInEntryCollection()
         {
@@ -681,6 +693,7 @@ namespace UnityEditor.AddressableAssets.Tests
             Assert.IsNotNull(entry2);
 
             // creating entry collection
+            Settings.DenyEntryCollectionPermission = true;
             var collectionPath = Path.Combine(testFolderPath, "entryCollection.asset").Replace('\\', '/');
             var col = ScriptableObject.CreateInstance<AddressableAssetEntryCollection>();
             col.Entries.Add(entry1);
@@ -689,6 +702,7 @@ namespace UnityEditor.AddressableAssets.Tests
             Settings.RemoveAssetEntry(entry2, false);
             AssetDatabase.CreateAsset(col, collectionPath);
             AssetDatabase.Refresh();
+            Settings.DenyEntryCollectionPermission = false;
 
             var guid = AssetDatabase.AssetPathToGUID(collectionPath);
             var collectionEntry = Settings.CreateOrMoveEntry(guid, m_testGroup);
@@ -706,6 +720,7 @@ namespace UnityEditor.AddressableAssets.Tests
             Directory.Delete(testFolderPath, true);
             Settings.RemoveAssetEntry(collectionEntry, false);
         }
+#pragma warning restore 0618
 
         [Test]
         public void GetRuntimeProviderType_HandlesEmptyProviderString()
@@ -782,6 +797,51 @@ namespace UnityEditor.AddressableAssets.Tests
             AddressableAssetEntry entry = new AddressableAssetEntry("", "Entry", null, false);
             Assert.DoesNotThrow(() => entry.SetAddress("[Entry]"));
         }
+
+        [Test]
+        public void WhenTargetAssetNotFoundInAssetDatabase_ReloadObject()
+        {
+            var obj = UnityEngine.AddressableAssets.Tests.TestObject.Create("test_targetAsset");
+            var obj2 = UnityEngine.AddressableAssets.Tests.TestObject.Create("test_targetAsset2");
+            string path = GetAssetPath("test_targetAsset.asset");
+
+            AssetDatabase.CreateAsset(obj, path);
+            AssetDatabase.SaveAssets();
+            var entry = new AddressableAssetEntry(AssetDatabase.AssetPathToGUID(path), "Entry", null, false);
+            UnityEngine.Object targetAsset = entry.TargetAsset;
+
+            AssetDatabase.CreateAsset(obj2, path);
+            AssetDatabase.SaveAssets();
+
+            Assert.IsFalse(AssetDatabase.TryGetGUIDAndLocalFileIdentifier(targetAsset, out string guid, out long localId));
+            UnityEngine.Object targetAsset2 = entry.TargetAsset;
+            Assert.IsTrue(AssetDatabase.TryGetGUIDAndLocalFileIdentifier(targetAsset2, out string guid2, out long localId2));
+
+            AssetDatabase.DeleteAsset(path);
+        }
+
+#pragma warning disable 0618
+        [Test]
+        public void CanConvertEntryCollectionToEntries()
+        {
+            Settings.DenyEntryCollectionPermission = true;
+            var collectionPath = Path.Combine(TestFolder, "collection.asset").Replace('\\', '/');
+            var collection = ScriptableObject.CreateInstance<AddressableAssetEntryCollection>();
+
+            var assetPath = GetAssetPath("test.prefab");
+            var assetGuid = AssetDatabase.AssetPathToGUID(assetPath);
+            var collectionEntry = new AddressableAssetEntry(assetGuid, "TestAssetEntry", null, false);
+            collectionEntry.m_cachedAssetPath = "TestPath";
+            collection.Entries.Add(collectionEntry);
+            AssetDatabase.CreateAsset(collection, collectionPath);
+            Settings.DenyEntryCollectionPermission = false;
+
+            bool converted = this.Settings.ConvertAssetEntryCollections(new List<string>() {collectionPath});
+            Assert.IsTrue(converted, "Failed to convert AssetEntryCollection to standard Group Entries");
+            var addedEntry = Settings.DefaultGroup.GetAssetEntry(assetGuid);
+            Assert.IsNotNull(addedEntry, "Could not find entry in default Group.");
+        }
+#pragma warning restore 0618
 
         string CreateSpriteAtlasWithSprite()
         {

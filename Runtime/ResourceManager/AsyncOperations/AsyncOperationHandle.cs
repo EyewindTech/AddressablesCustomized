@@ -21,6 +21,13 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             set { m_LocationName = value; }
         }
 
+        bool m_UnloadSceneOpExcludeReleaseCallback;
+        internal bool UnloadSceneOpExcludeReleaseCallback
+        {
+            get { return m_UnloadSceneOpExcludeReleaseCallback; }
+            set { m_UnloadSceneOpExcludeReleaseCallback = value; }
+        }
+
         /// <summary>
         /// Conversion from typed to non typed handles.  This does not increment the reference count.
         /// To convert from non-typed back, use AsyncOperationHandle.Convert&lt;T&gt;()
@@ -37,6 +44,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             m_InternalOp = op;
             m_Version = op?.Version ?? 0;
             m_LocationName = null;
+            m_UnloadSceneOpExcludeReleaseCallback = false;
         }
 
         /// <summary>
@@ -60,6 +68,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             m_InternalOp = (AsyncOperationBase<TObject>)op;
             m_Version = op?.Version ?? 0;
             m_LocationName = null;
+            m_UnloadSceneOpExcludeReleaseCallback = false;
         }
 
         internal AsyncOperationHandle(IAsyncOperation op, int version)
@@ -67,6 +76,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             m_InternalOp = (AsyncOperationBase<TObject>)op;
             m_Version = version;
             m_LocationName = null;
+            m_UnloadSceneOpExcludeReleaseCallback = false;
         }
 
         internal AsyncOperationHandle(IAsyncOperation op, string locationName)
@@ -74,6 +84,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             m_InternalOp = (AsyncOperationBase<TObject>)op;
             m_Version = op?.Version ?? 0;
             m_LocationName = locationName;
+            m_UnloadSceneOpExcludeReleaseCallback = false;
         }
 
         internal AsyncOperationHandle(IAsyncOperation op, int version, string locationName)
@@ -81,6 +92,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             m_InternalOp = (AsyncOperationBase<TObject>)op;
             m_Version = version;
             m_LocationName = locationName;
+            m_UnloadSceneOpExcludeReleaseCallback = false;
         }
 
         /// <summary>
@@ -125,6 +137,15 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         }
 
         /// <summary>
+        /// Get dependency operations.
+        /// </summary>
+        /// <param name="deps">The list of AsyncOperationHandles that are dependencies of a given AsyncOperationHandle</param>
+        public void GetDependencies(List<AsyncOperationHandle> deps)
+        {
+            InternalOp.GetDependencies(deps);
+        }
+
+        /// <summary>
         /// Event for handling the destruction of the operation.
         /// </summary>
         public event Action<AsyncOperationHandle> Destroyed
@@ -158,12 +179,28 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         /// <returns>The result of the operation or null.</returns>
         public TObject WaitForCompletion()
         {
-            if(IsValid())
+#if !UNITY_2021_1_OR_NEWER
+            AsyncOperationHandle.IsWaitingForCompletion = true;
+            try
+            {
+                if (IsValid() && !InternalOp.IsDone)
+                    InternalOp.WaitForCompletion();
+                if (IsValid())
+                    return Result;
+            }
+            finally
+            {
+                AsyncOperationHandle.IsWaitingForCompletion = false;
+                m_InternalOp?.m_RM?.Update(Time.unscaledDeltaTime);
+            }
+#else
+            if (IsValid() && !InternalOp.IsDone)
                 InternalOp.WaitForCompletion();
 
-            if(IsValid())
+            m_InternalOp?.m_RM?.Update(Time.unscaledDeltaTime);
+            if (IsValid())
                 return Result;
-
+#endif
             return default(TObject);
         }
 
@@ -281,6 +318,15 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
     /// </summary>
     public struct AsyncOperationHandle : IEnumerator
     {
+#if !UNITY_2021_1_OR_NEWER
+        private static bool m_IsWaitingForCompletion = false;
+        internal static bool IsWaitingForCompletion
+        {
+            get { return m_IsWaitingForCompletion; }
+            set { m_IsWaitingForCompletion = value; }
+        }
+#endif
+        
         internal IAsyncOperation m_InternalOp;
         int m_Version;
         string m_LocationName;
@@ -529,10 +575,25 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         /// <returns>The result of the operation or null.</returns>
         public object WaitForCompletion()
         {
-            if (IsValid())
+#if !UNITY_2021_1_OR_NEWER
+            IsWaitingForCompletion = true;
+            try
+            {
+                if (IsValid() && !InternalOp.IsDone)
+                    InternalOp.WaitForCompletion();
+                if (IsValid())
+                    return Result;
+            }
+            finally
+            {
+                IsWaitingForCompletion = false;
+            }
+#else
+            if (IsValid() && !InternalOp.IsDone)
                 InternalOp.WaitForCompletion();
-            if(IsValid())
+            if (IsValid())
                 return Result;
+#endif
             return null;
         }
     }

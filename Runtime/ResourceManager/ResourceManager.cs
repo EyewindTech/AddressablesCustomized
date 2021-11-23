@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using UnityEngine.Networking;
 using UnityEngine.ResourceManagement.AsyncOperations;
-using UnityEngine.ResourceManagement.Diagnostics;
 using UnityEngine.ResourceManagement.Exceptions;
 using UnityEngine.ResourceManagement.ResourceLocations;
 using UnityEngine.ResourceManagement.ResourceProviders;
@@ -116,8 +115,10 @@ namespace UnityEngine.ResourceManagement
 
         /// <summary>
         /// Global exception handler.  This will be called whenever an IAsyncOperation.OperationException is set to a non-null value.
-        /// See the [ResourceManager.ExceptionHandler](xref:addressables-api-exception-handler) documentation for more details.
         /// </summary>
+        /// <example>
+        /// <code source="../../Samples/DocSampleCode/AddExceptionHandler.cs" region="doc_AddExceptionHandler" title="Adding a global exception hanlder"/>
+        /// </example>
         public static Action<AsyncOperationHandle, Exception> ExceptionHandler { get; set; }
 
         /// <summary>
@@ -130,11 +131,19 @@ namespace UnityEngine.ResourceManagement
         /// Checks for an internal id transform function and uses it to modify the internal id value.
         /// </summary>
         /// <param name="location">The location to transform the internal id of.</param>
-        /// <returns>If a transform func is set, use it to pull the local id. otheriwse the InternalId property of the location is used.</returns>
+        /// <returns>If a transform func is set, use it to pull the local id; otherwise, the InternalId property of the location is used.</returns>
         public string TransformInternalId(IResourceLocation location)
         {
             return InternalIdTransformFunc == null ? location.InternalId : InternalIdTransformFunc(location);
         }
+
+        /// <summary>
+        /// Delegate that can be used to override the web request options before being sent.
+        /// </summary>
+        /// <remarks>
+        /// The web request passed to this delegate has already been preconfigured internally. Override at your own risk.
+        /// </remarks>
+        public Action<UnityWebRequest> WebRequestOverride { get; set; }
 
         internal bool CallbackHooksEnabled = true; // tests might need to disable the callback hooks to manually pump updating
 
@@ -144,15 +153,26 @@ namespace UnityEngine.ResourceManagement
         // list of all the providers in s_ResourceProviders that implement IUpdateReceiver
         ListWithEvents<IUpdateReceiver> m_UpdateReceivers = new ListWithEvents<IUpdateReceiver>();
         List<IUpdateReceiver> m_UpdateReceiversToRemove = null;
+        //this prevents removing receivers during iteration
         bool m_UpdatingReceivers = false;
+        //this prevents re-entrance into the Update method, which can cause stack overflow and infinite loops
+        bool m_InsideUpdateMethod = false;
         internal int OperationCacheCount { get { return m_AssetOperationCache.Count; } }
         internal int InstanceOperationCount { get { return m_TrackedInstanceOperations.Count; } }
         //cache of type + providerId to IResourceProviders for faster lookup
-        Dictionary<int, IResourceProvider> m_providerMap = new Dictionary<int, IResourceProvider>();
-        Dictionary<int, IAsyncOperation> m_AssetOperationCache = new Dictionary<int, IAsyncOperation>();
+        internal Dictionary<int, IResourceProvider> m_providerMap = new Dictionary<int, IResourceProvider>();
+        Dictionary<IOperationCacheKey, IAsyncOperation> m_AssetOperationCache = new Dictionary<IOperationCacheKey, IAsyncOperation>();
         HashSet<InstanceOperation> m_TrackedInstanceOperations = new HashSet<InstanceOperation>();
         DelegateList<float> m_UpdateCallbacks = DelegateList<float>.CreateWithGlobalCache();
         List<IAsyncOperation> m_DeferredCompleteCallbacks = new List<IAsyncOperation>();
+
+        bool m_InsideExecuteDeferredCallbacksMethod = false;
+        List<DeferredCallbackRegisterRequest> m_DeferredCallbacksToRegister = null;
+        private struct DeferredCallbackRegisterRequest
+        {
+            internal IAsyncOperation operation;
+            internal bool incrementRefCount;
+        }
 
         Action<AsyncOperationHandle, DiagnosticEventType, int, object> m_obsoleteDiagnosticsHandler; // For use in working with Obsolete RegisterDiagnosticCallback method.
         Action<DiagnosticEventContext> m_diagnosticsHandler;
@@ -375,15 +395,15 @@ namespace UnityEngine.ResourceManagement
                 provider = GetResourceProvider(desiredType, location);
                 if (provider == null)
                 {
-                    var message = new UnknownResourceProviderException(location).Message;
-                    return CreateCompletedOperationInternal<object>(null, string.IsNullOrEmpty(message), message, releaseDependenciesOnFailure);
+                    var ex = new UnknownResourceProviderException(location);
+                    return CreateCompletedOperationInternal<object>(null, false, ex, releaseDependenciesOnFailure);
                 }
                 desiredType = provider.GetDefaultType(location);
             }
 
             IAsyncOperation op;
-            int hash = location.Hash(desiredType);
-            if (m_AssetOperationCache.TryGetValue(hash, out op))
+            var key = new LocationCacheKey(location, desiredType);
+            if (m_AssetOperationCache.TryGetValue(key, out op))
             {
                 op.IncrementReferenceCount();
                 return new AsyncOperationHandle(op, location.ToString());;
@@ -392,7 +412,7 @@ namespace UnityEngine.ResourceManagement
             Type provType;
             if (!m_ProviderOperationTypeCache.TryGetValue(desiredType, out provType))
                 m_ProviderOperationTypeCache.Add(desiredType, provType = typeof(ProviderOperation<>).MakeGenericType(new Type[] { desiredType }));
-            op = CreateOperation<IAsyncOperation>(provType, provType.GetHashCode(), hash, m_ReleaseOpCached);
+            op = CreateOperation<IAsyncOperation>(provType, provType.GetHashCode(), key, m_ReleaseOpCached);
 
             // Calculate the hash of the dependencies
             int depHash = location.DependencyHashCode;
@@ -450,14 +470,19 @@ namespace UnityEngine.ResourceManagement
         class CompletedOperation<TObject> : AsyncOperationBase<TObject>
         {
             bool m_Success;
-            string m_ErrorMsg;
+            Exception m_Exception;
             bool m_ReleaseDependenciesOnFailure;
             public CompletedOperation() {}
             public void Init(TObject result, bool success, string errorMsg, bool releaseDependenciesOnFailure = true)
             {
+                Init(result, success, !string.IsNullOrEmpty(errorMsg) ? new Exception(errorMsg) : null, releaseDependenciesOnFailure);
+            }
+
+            public void Init(TObject result, bool success, Exception exception, bool releaseDependenciesOnFailure = true)
+            {
                 Result = result;
                 m_Success = success;
-                m_ErrorMsg = errorMsg;
+                m_Exception = exception;
                 m_ReleaseDependenciesOnFailure = releaseDependenciesOnFailure;
             }
 
@@ -466,9 +491,10 @@ namespace UnityEngine.ResourceManagement
                 get { return "CompletedOperation";}
             }
 
-            internal override bool InvokeWaitForCompletion()
+            ///<inheritdoc />
+            protected  override bool InvokeWaitForCompletion()
             {
-                m_RM?.Update(Time.deltaTime);
+                m_RM?.Update(Time.unscaledDeltaTime);
                 if (!HasExecuted)
                     InvokeExecute();
                 return true;
@@ -476,7 +502,7 @@ namespace UnityEngine.ResourceManagement
 
             protected override void Execute()
             {
-                Complete(Result, m_Success, m_ErrorMsg, m_ReleaseDependenciesOnFailure);
+                Complete(Result, m_Success, m_Exception, m_ReleaseDependenciesOnFailure);
             }
         }
 
@@ -495,13 +521,13 @@ namespace UnityEngine.ResourceManagement
         {
             Allocator.Release(o.GetType().GetHashCode(), o);
             var cachable = o as ICachable;
-            if (cachable != null)
-                RemoveOperationFromCache(cachable.Hash);
+            if (cachable?.Key != null)
+                RemoveOperationFromCache(cachable.Key);
         }
 
-        internal T CreateOperation<T>(Type actualType, int typeHash, int operationHash, Action<IAsyncOperation> onDestroyAction) where T : IAsyncOperation
+        internal T CreateOperation<T>(Type actualType, int typeHash, IOperationCacheKey cacheKey, Action<IAsyncOperation> onDestroyAction) where T : IAsyncOperation
         {
-            if (operationHash == 0)
+            if (cacheKey == null)
             {
                 var op = (T)Allocator.New(actualType, typeHash);
                 op.OnDestroy = onDestroyAction;
@@ -511,31 +537,32 @@ namespace UnityEngine.ResourceManagement
             {
                 var op = (T)Allocator.New(actualType, typeHash);
                 op.OnDestroy = onDestroyAction;
-                var cachable = op as ICachable;
-                if (cachable != null)
-                    cachable.Hash = operationHash;
-                AddOperationToCache(operationHash, op);
+                if (op is ICachable cachable)
+                {
+                    cachable.Key = cacheKey;
+                    AddOperationToCache(cacheKey, op);
+                }
                 return op;
             }
         }
 
-        internal void AddOperationToCache(int hash, IAsyncOperation operation)
+        internal void AddOperationToCache(IOperationCacheKey key, IAsyncOperation operation)
         {
-            if (!IsOperationCached(hash))
-                m_AssetOperationCache.Add(hash, operation);
+            if (!IsOperationCached(key))
+                m_AssetOperationCache.Add(key, operation);
         }
 
-        internal bool RemoveOperationFromCache(int hash)
+        internal bool RemoveOperationFromCache(IOperationCacheKey key)
         {
-            if (!IsOperationCached(hash))
+            if (!IsOperationCached(key))
                 return true;
 
-            return m_AssetOperationCache.Remove(hash);
+            return m_AssetOperationCache.Remove(key);
         }
 
-        internal bool IsOperationCached(int hash)
+        internal bool IsOperationCached(IOperationCacheKey key)
         {
-            return m_AssetOperationCache.ContainsKey(hash);
+            return m_AssetOperationCache.ContainsKey(key);
         }
 
         internal int CachedOperationCount()
@@ -552,13 +579,26 @@ namespace UnityEngine.ResourceManagement
         /// <returns>The operation handle used for the completed operation.</returns>
         public AsyncOperationHandle<TObject> CreateCompletedOperation<TObject>(TObject result, string errorMsg)
         {
-            return CreateCompletedOperationInternal(result, string.IsNullOrEmpty(errorMsg), errorMsg);
+            var success = string.IsNullOrEmpty(errorMsg);
+            return CreateCompletedOperationInternal(result, success, !success ? new Exception(errorMsg) : null);
         }
 
-        internal AsyncOperationHandle<TObject> CreateCompletedOperationInternal<TObject>(TObject result, bool success, string errorMsg, bool releaseDependenciesOnFailure = true)
+        /// <summary>
+        /// Creates an operation that has already completed with a specified result and error message./>.
+        /// </summary>
+        /// <param name="result">The result that the operation will provide.</param>
+        /// <param name="exception">The exception with an error message if the operation should be in the failed state. Otherwise null.</param>
+        /// <typeparam name="TObject">Object type.</typeparam>
+        /// <returns>The operation handle used for the completed operation.</returns>
+        public AsyncOperationHandle<TObject> CreateCompletedOperationWithException<TObject>(TObject result, Exception exception)
         {
-            var cop = CreateOperation<CompletedOperation<TObject>>(typeof(CompletedOperation<TObject>), typeof(CompletedOperation<TObject>).GetHashCode(), 0, null);
-            cop.Init(result, success, errorMsg, releaseDependenciesOnFailure);
+            return CreateCompletedOperationInternal(result, exception == null, exception);
+        }
+
+        internal AsyncOperationHandle<TObject> CreateCompletedOperationInternal<TObject>(TObject result, bool success, Exception exception, bool releaseDependenciesOnFailure = true)
+        {
+            var cop = CreateOperation<CompletedOperation<TObject>>(typeof(CompletedOperation<TObject>), typeof(CompletedOperation<TObject>).GetHashCode(), null, m_ReleaseOpNonCached);
+            cop.Init(result, success, exception, releaseDependenciesOnFailure);
             return StartOperation(cop, default(AsyncOperationHandle));
         }
 
@@ -580,10 +620,10 @@ namespace UnityEngine.ResourceManagement
             handle.Acquire();
         }
 
-        private GroupOperation AcquireGroupOpFromCache(int hash)
+        private GroupOperation AcquireGroupOpFromCache(IOperationCacheKey key)
         {
             IAsyncOperation opGeneric;
-            if (m_AssetOperationCache.TryGetValue(hash, out opGeneric))
+            if (m_AssetOperationCache.TryGetValue(key, out opGeneric))
             {
                 opGeneric.IncrementReferenceCount();
                 return (GroupOperation)opGeneric;
@@ -599,7 +639,7 @@ namespace UnityEngine.ResourceManagement
         /// <returns>The operation for the entire group.</returns>
         public AsyncOperationHandle<IList<AsyncOperationHandle>> CreateGroupOperation<T>(IList<IResourceLocation> locations)
         {
-            var op = CreateOperation<GroupOperation>(typeof(GroupOperation), s_GroupOperationTypeHash, 0, m_ReleaseOpNonCached);
+            var op = CreateOperation<GroupOperation>(typeof(GroupOperation), s_GroupOperationTypeHash, null, m_ReleaseOpNonCached);
             var ops = new List<AsyncOperationHandle>(locations.Count);
             foreach (var loc in locations)
                 ops.Add(ProvideResource<T>(loc));
@@ -607,7 +647,7 @@ namespace UnityEngine.ResourceManagement
             op.Init(ops);
             return StartOperation(op, default);
         }
-        
+
         /// <summary>
         /// Create a group operation for a set of locations.
         /// </summary>
@@ -617,13 +657,13 @@ namespace UnityEngine.ResourceManagement
         /// <returns>The operation for the entire group.</returns>
         internal AsyncOperationHandle<IList<AsyncOperationHandle>> CreateGroupOperation<T>(IList<IResourceLocation> locations, bool allowFailedDependencies)
         {
-            var op = CreateOperation<GroupOperation>(typeof(GroupOperation), s_GroupOperationTypeHash, 0, m_ReleaseOpNonCached);
+            var op = CreateOperation<GroupOperation>(typeof(GroupOperation), s_GroupOperationTypeHash, null, m_ReleaseOpNonCached);
             var ops = new List<AsyncOperationHandle>(locations.Count);
             foreach (var loc in locations)
                 ops.Add(ProvideResource<T>(loc));
 
             GroupOperation.GroupOperationSettings settings = GroupOperation.GroupOperationSettings.None;
-            if( allowFailedDependencies )
+            if (allowFailedDependencies)
                 settings |= GroupOperation.GroupOperationSettings.AllowFailedDependencies;
             op.Init(ops, settings);
             return StartOperation(op, default);
@@ -637,7 +677,7 @@ namespace UnityEngine.ResourceManagement
         /// <returns>The operation for the entire group</returns>
         public AsyncOperationHandle<IList<AsyncOperationHandle>> CreateGenericGroupOperation(List<AsyncOperationHandle> operations, bool releasedCachedOpOnComplete = false)
         {
-            var op = CreateOperation<GroupOperation>(typeof(GroupOperation), s_GroupOperationTypeHash, operations.GetHashCode(), releasedCachedOpOnComplete ? m_ReleaseOpCached : m_ReleaseOpNonCached);
+            var op = CreateOperation<GroupOperation>(typeof(GroupOperation), s_GroupOperationTypeHash, new AsyncOpHandlesCacheKey(operations), releasedCachedOpOnComplete ? m_ReleaseOpCached : m_ReleaseOpNonCached);
             op.Init(operations);
             return StartOperation(op, default);
         }
@@ -645,11 +685,12 @@ namespace UnityEngine.ResourceManagement
         internal AsyncOperationHandle<IList<AsyncOperationHandle>> ProvideResourceGroupCached(
             IList<IResourceLocation> locations, int groupHash, Type desiredType, Action<AsyncOperationHandle> callback, bool releaseDependenciesOnFailure = true)
         {
-            GroupOperation op = AcquireGroupOpFromCache(groupHash);
+            var depsKey = new DependenciesCacheKey(locations, groupHash);
+            GroupOperation op = AcquireGroupOpFromCache(depsKey);
             AsyncOperationHandle<IList<AsyncOperationHandle>> handle;
             if (op == null)
             {
-                op = CreateOperation<GroupOperation>(typeof(GroupOperation), s_GroupOperationTypeHash, groupHash, m_ReleaseOpCached);
+                op = CreateOperation<GroupOperation>(typeof(GroupOperation), s_GroupOperationTypeHash, depsKey, m_ReleaseOpCached);
                 var ops = new List<AsyncOperationHandle>(locations.Count);
                 foreach (var loc in locations)
                     ops.Add(ProvideResource(loc, desiredType, releaseDependenciesOnFailure));
@@ -718,7 +759,7 @@ namespace UnityEngine.ResourceManagement
                 AsyncOperationHandle<IList<AsyncOperationHandle>> handleToHandles = resultHandle.Convert<IList<AsyncOperationHandle>>();
 
                 var list = new List<TObject>();
-                var errorMessage = string.Empty;
+                Exception exception = null;
                 if (handleToHandles.Status == AsyncOperationStatus.Succeeded)
                 {
                     foreach (var r in handleToHandles.Result)
@@ -744,15 +785,15 @@ namespace UnityEngine.ResourceManagement
                     if (!foundSuccess)
                     {
                         list = null;
-                        errorMessage = handleToHandles.OperationException != null ? handleToHandles.OperationException.Message : "ProvidResources failed";
+                        exception = new ResourceManagerException("ProvideResources failed", handleToHandles.OperationException);
                     }
                     else
                     {
-                        errorMessage = "Partial success in ProvideResources.  Some items failed to load. See earlier logs for more info.";
+                        exception = new ResourceManagerException("Partial success in ProvideResources.  Some items failed to load. See earlier logs for more info.", handleToHandles.OperationException);
                     }
                 }
 
-                return CreateCompletedOperationInternal<IList<TObject>>(list, string.IsNullOrEmpty(errorMessage), errorMessage, releaseDependenciesOnFailure);
+                return CreateCompletedOperationInternal<IList<TObject>>(list, exception == null, exception, releaseDependenciesOnFailure);
             }, releaseDependenciesOnFailure);
 
             // chain operation holds the dependency
@@ -770,7 +811,7 @@ namespace UnityEngine.ResourceManagement
         /// <returns>The operation handle.</returns>
         public AsyncOperationHandle<TObject> CreateChainOperation<TObject, TObjectDependency>(AsyncOperationHandle<TObjectDependency> dependentOp, Func<AsyncOperationHandle<TObjectDependency>, AsyncOperationHandle<TObject>> callback)
         {
-            var op = CreateOperation<ChainOperation<TObject, TObjectDependency>>(typeof(ChainOperation<TObject, TObjectDependency>), typeof(ChainOperation<TObject, TObjectDependency>).GetHashCode(), 0, null);
+            var op = CreateOperation<ChainOperation<TObject, TObjectDependency>>(typeof(ChainOperation<TObject, TObjectDependency>), typeof(ChainOperation<TObject, TObjectDependency>).GetHashCode(), null, null);
             op.Init(dependentOp, callback, true);
             return StartOperation(op, dependentOp);
         }
@@ -800,7 +841,7 @@ namespace UnityEngine.ResourceManagement
         /// <returns>The operation handle.</returns>
         public AsyncOperationHandle<TObject> CreateChainOperation<TObject, TObjectDependency>(AsyncOperationHandle<TObjectDependency> dependentOp, Func<AsyncOperationHandle<TObjectDependency>, AsyncOperationHandle<TObject>> callback, bool releaseDependenciesOnFailure = true)
         {
-            var op = CreateOperation<ChainOperation<TObject, TObjectDependency>>(typeof(ChainOperation<TObject, TObjectDependency>), typeof(ChainOperation<TObject, TObjectDependency>).GetHashCode(), 0, null);
+            var op = CreateOperation<ChainOperation<TObject, TObjectDependency>>(typeof(ChainOperation<TObject, TObjectDependency>), typeof(ChainOperation<TObject, TObjectDependency>).GetHashCode(), null, null);
             op.Init(dependentOp, callback, releaseDependenciesOnFailure);
             return StartOperation(op, dependentOp);
         }
@@ -842,7 +883,8 @@ namespace UnityEngine.ResourceManagement
                 return m_dependency.IsValid() ? m_dependency.InternalGetDownloadStatus(visited) : new DownloadStatus() { IsDone = IsDone };
             }
 
-            protected override void GetDependencies(List<AsyncOperationHandle> deps)
+            /// <inheritdoc />
+            public override void GetDependencies(List<AsyncOperationHandle> deps)
             {
                 deps.Add(m_dependency);
             }
@@ -872,16 +914,17 @@ namespace UnityEngine.ResourceManagement
                 }
             }
 
-            internal override bool InvokeWaitForCompletion()
+            ///<inheritdoc />
+            protected  override bool InvokeWaitForCompletion()
             {
                 if (m_dependency.IsValid() && !m_dependency.IsDone)
                     m_dependency.WaitForCompletion();
 
-                m_RM?.Update(Time.deltaTime);
+                m_RM?.Update(Time.unscaledDeltaTime);
                 if (m_instance == null && !HasExecuted)
                     InvokeExecute();
 
-                return m_instance != null;
+                return IsDone;
             }
 
             protected override void Execute()
@@ -950,7 +993,7 @@ namespace UnityEngine.ResourceManagement
                 throw new ArgumentNullException("location");
 
             var depOp = ProvideResource<GameObject>(location);
-            var baseOp = CreateOperation<InstanceOperation>(typeof(InstanceOperation), s_InstanceOperationTypeHash, 0, m_ReleaseInstanceOp);
+            var baseOp = CreateOperation<InstanceOperation>(typeof(InstanceOperation), s_InstanceOperationTypeHash, null, m_ReleaseInstanceOp);
             baseOp.Init(this, provider, instantiateParameters, depOp);
             m_TrackedInstanceOperations.Add(baseOp);
             return StartOperation<GameObject>(baseOp, depOp);
@@ -984,24 +1027,47 @@ namespace UnityEngine.ResourceManagement
 
         private void ExecuteDeferredCallbacks()
         {
+            m_InsideExecuteDeferredCallbacksMethod = true;
             for (int i = 0; i < m_DeferredCompleteCallbacks.Count; i++)
             {
+                if (!m_DeferredCompleteCallbacks[i].IsDone)
+                    Debug.LogWarning("Executing complete callback for a released operation.");
                 m_DeferredCompleteCallbacks[i].InvokeCompletionEvent();
                 m_DeferredCompleteCallbacks[i].DecrementReferenceCount();
             }
             m_DeferredCompleteCallbacks.Clear();
+            m_InsideExecuteDeferredCallbacksMethod = false;
         }
 
         internal void RegisterForDeferredCallback(IAsyncOperation op, bool incrementRefCount = true)
         {
-            if (incrementRefCount)
-                op.IncrementReferenceCount();
-            m_DeferredCompleteCallbacks.Add(op);
-            RegisterForCallbacks();
+            if (CallbackHooksEnabled && m_InsideExecuteDeferredCallbacksMethod)
+            {
+                if (m_DeferredCallbacksToRegister == null)
+                    m_DeferredCallbacksToRegister = new List<DeferredCallbackRegisterRequest>();
+                m_DeferredCallbacksToRegister.Add
+                    (
+                        new DeferredCallbackRegisterRequest()
+                        {
+                            operation = op,
+                            incrementRefCount = incrementRefCount
+                        }
+                    );
+            }
+            else
+            {
+                if (incrementRefCount)
+                    op.IncrementReferenceCount();
+                m_DeferredCompleteCallbacks.Add(op);
+                RegisterForCallbacks();
+            }
         }
 
         internal void Update(float unscaledDeltaTime)
         {
+            if (m_InsideUpdateMethod)
+                throw new Exception("Reentering the Update method is not allowed.  This can happen when calling WaitForCompletion on an operation while inside of a callback.");
+            m_InsideUpdateMethod = true;
             m_UpdateCallbacks.Invoke(unscaledDeltaTime);
             m_UpdatingReceivers = true;
             for (int i = 0; i < m_UpdateReceivers.Count; i++)
@@ -1013,7 +1079,14 @@ namespace UnityEngine.ResourceManagement
                     m_UpdateReceivers.Remove(r);
                 m_UpdateReceiversToRemove = null;
             }
+            if (m_DeferredCallbacksToRegister != null)
+            {
+                foreach (DeferredCallbackRegisterRequest callback in m_DeferredCallbacksToRegister)
+                    RegisterForDeferredCallback(callback.operation, callback.incrementRefCount);
+                m_DeferredCallbacksToRegister = null;
+            }
             ExecuteDeferredCallbacks();
+            m_InsideUpdateMethod = false;
         }
 
         /// <summary>

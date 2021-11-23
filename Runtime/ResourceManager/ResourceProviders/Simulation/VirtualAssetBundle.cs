@@ -128,6 +128,8 @@ namespace UnityEngine.ResourceManagement.ResourceProviders.Simulation
         /// </summary>
         public long Size { get { return m_Size; } }
 
+        [SerializeField]
+        internal string m_AssetPath;
         /// <summary>
         /// Construct a new VirtualAssetBundleEntry
         /// </summary>
@@ -489,7 +491,7 @@ namespace UnityEngine.ResourceManagement.ResourceProviders.Simulation
                 if (!(Context is IResourceLocation))
                     return false;
                 var location = Context as IResourceLocation;
-                var assetPath = m_provideHandle.ResourceManager.TransformInternalId(location);
+                var assetPath = m_AssetInfo.m_AssetPath;
                 object result = null;
 
                 var pt = m_provideHandle.Type;
@@ -499,26 +501,10 @@ namespace UnityEngine.ResourceManagement.ResourceProviders.Simulation
                     result = ResourceManagerConfig.CreateListResult(pt, AssetDatabaseProvider.LoadAssetsWithSubAssets(assetPath));
                 else
                 {
-                    if (ResourceManagerConfig.ExtractKeyAndSubKey(assetPath, out string mainPath, out string subKey))
-                    {
-                        var objs = AssetDatabase.LoadAllAssetRepresentationsAtPath(mainPath);
-                        foreach (var o in objs)
-                        {
-                            if (o.name == subKey)
-                            {
-                                if (pt.IsAssignableFrom(o.GetType()))
-                                {
-                                    result = o;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                    if (ResourceManagerConfig.ExtractKeyAndSubKey(location.InternalId, out string mainPath, out string subKey))
+                        result = AssetDatabaseProvider.LoadAssetSubObject(assetPath, subKey, pt);
                     else
-                    {
-                        var obj = AssetDatabase.LoadAssetAtPath(assetPath, location.ResourceType);
-                        result = obj != null && pt.IsAssignableFrom(obj.GetType()) ? obj : null;
-                    }
+                        result = AssetDatabaseProvider.LoadAssetAtPath(assetPath, m_provideHandle);
                 }
                 SetResult(result);
                 InvokeCompletionEvent();

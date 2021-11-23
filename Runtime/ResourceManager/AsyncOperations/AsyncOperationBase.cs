@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+using UnityEngine.ResourceManagement.Exceptions;
 using UnityEngine.ResourceManagement.ResourceLocations;
 using UnityEngine.ResourceManagement.ResourceProviders;
 using UnityEngine.ResourceManagement.Util;
@@ -14,7 +15,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
 {
     internal interface ICachable
     {
-        int Hash { get; set; }
+        IOperationCacheKey Key { get; set; }
     }
 
     internal interface IAsyncOperation
@@ -81,7 +82,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         /// A custom operation should override this method to provide a list of AsyncOperationHandles that it depends on.
         /// </summary>
         /// <param name="dependencies">The list that should be populated with dependent AsyncOperationHandles.</param>
-        protected virtual void GetDependencies(List<AsyncOperationHandle> dependencies) {}
+        public virtual void GetDependencies(List<AsyncOperationHandle> dependencies) {}
 
         /// <summary>
         /// Accessor to Result of the operation.
@@ -100,12 +101,12 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
 
         internal bool CompletedEventHasListeners => m_CompletedActionT != null && m_CompletedActionT.Count > 0;
         internal bool DestroyedEventHasListeners => m_DestroyedAction != null && m_DestroyedAction.Count > 0;
-     
+
         Action<IAsyncOperation> m_OnDestroyAction;
         internal Action<IAsyncOperation> OnDestroy { set { m_OnDestroyAction = value; } }
         internal int ReferenceCount { get { return m_referenceCount; } }
         Action<AsyncOperationHandle> m_dependencyCompleteAction;
-        protected bool HasExecuted = false;
+        protected internal bool HasExecuted = false;
 
         /// <summary>
         /// True if the current op has begun but hasn't yet reached completion.  False otherwise.
@@ -150,10 +151,17 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         /// </summary>
         public void WaitForCompletion()
         {
-            while (!InvokeWaitForCompletion()) { }
+            if (Application.platform != RuntimePlatform.WebGLPlayer)
+                while (!InvokeWaitForCompletion()) { }
+            else
+                throw new Exception($"WebGL does not support synchronous Addressable loading.  Please do not use WaitForCompletion on the WebGL platform.");
         }
 
-        internal virtual bool InvokeWaitForCompletion(){ return IsDone; }
+        /// <summary>
+        /// Used for the implementation of WaitForCompletion in an IAsyncOperation.
+        /// </summary>
+        /// <returns>True if the operation has completed, otherwise false.</returns>
+        protected virtual bool InvokeWaitForCompletion() { return true; }
 
         internal void DecrementReferenceCount()
         {
@@ -180,6 +188,8 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
                 Result = default(TObject);
                 m_referenceCount = 1;
                 m_Status = AsyncOperationStatus.None;
+                m_taskCompletionSource = null;
+                m_taskCompletionSourceTypeless = null;
                 m_Error = null;
                 m_Version++;
                 m_RM = null;
@@ -192,116 +202,33 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             }
         }
 
-        System.Threading.EventWaitHandle m_waitHandle;
-        internal System.Threading.WaitHandle WaitHandle
+        TaskCompletionSource<TObject> m_taskCompletionSource;
+        internal Task<TObject> Task
         {
             get
             {
-                if (m_waitHandle == null)
-                    m_waitHandle = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.ManualReset);
-                m_waitHandle.Reset();
-                return m_waitHandle;
+                if (m_taskCompletionSource == null)
+                {
+                    m_taskCompletionSource = new TaskCompletionSource<TObject>();
+                    if (IsDone && !CompletedEventHasListeners)
+                        m_taskCompletionSource.SetResult(Result);
+                }
+                return m_taskCompletionSource.Task;
             }
         }
 
-        internal System.Threading.Tasks.Task<TObject> Task
+        TaskCompletionSource<object> m_taskCompletionSourceTypeless;
+        Task<object> IAsyncOperation.Task
         {
             get
             {
-#if UNITY_WEBGL
-                Debug.LogError("Multithreaded operation are not supported on WebGL.  Unable to aquire Task.");
-                return default;
-#else
-                if (Status == AsyncOperationStatus.Failed)
+                if (m_taskCompletionSourceTypeless == null)
                 {
-                    return System.Threading.Tasks.Task.FromResult(default(TObject));
+                    m_taskCompletionSourceTypeless = new TaskCompletionSource<object>();
+                    if (IsDone && !CompletedEventHasListeners)
+                        m_taskCompletionSourceTypeless.SetResult(Result);
                 }
-                System.Threading.WaitHandle waitHandle = null;
-                if (Status == AsyncOperationStatus.Succeeded)
-                {
-                    if (Handle.IsValid() && CompletedEventHasListeners)
-                    {
-                        waitHandle = WaitHandle;
-                        Task<TObject> t = System.Threading.Tasks.Task.Factory.StartNew((Func<object, TObject>) (o =>
-                        {
-                            var asyncOperation = o as AsyncOperationBase<TObject>;
-                            if (asyncOperation == null)
-                                return default(TObject);
-                            asyncOperation.IncrementReferenceCount();
-                            waitHandle.WaitOne();
-                            var result = (TObject)asyncOperation.Result;
-                            asyncOperation.DecrementReferenceCount();
-                            return result;
-                        }), this);
-                        return t;
-                    }
-                    
-                    return System.Threading.Tasks.Task.FromResult(Result);
-                }
-
-                waitHandle = WaitHandle;
-                return System.Threading.Tasks.Task.Factory.StartNew((Func<object, TObject>)(o =>
-                {
-                    var asyncOperation = o as AsyncOperationBase<TObject>;
-                    if (asyncOperation == null)
-                        return default(TObject);
-                    asyncOperation.IncrementReferenceCount();
-                    waitHandle.WaitOne();
-                    var result = (TObject)asyncOperation.Result;
-                    asyncOperation.DecrementReferenceCount();
-                    return result;
-                }), this);
-#endif
-            }
-        }
-
-        System.Threading.Tasks.Task<object> IAsyncOperation.Task
-        {
-            get
-            {
-#if UNITY_WEBGL
-                Debug.LogError("Multithreaded operation are not supported on WebGL.  Unable to aquire Task.");
-                return default;
-#else
-                if (Status == AsyncOperationStatus.Failed)
-                {
-                    return System.Threading.Tasks.Task.FromResult<object>(null);
-                }
-                System.Threading.WaitHandle waitHandle = null;
-                if (Status == AsyncOperationStatus.Succeeded)
-                {
-                    if (Handle.IsValid() && CompletedEventHasListeners)
-                    {
-                        waitHandle = WaitHandle;
-                        Task<object> t = System.Threading.Tasks.Task.Factory.StartNew<object>((Func<object, object>)(o =>
-                        {
-                            var asyncOperation = o as AsyncOperationBase<TObject>;
-                            if (asyncOperation == null)
-                                return default(object);
-                            asyncOperation.IncrementReferenceCount();
-                            waitHandle.WaitOne();
-                            var result = (object)asyncOperation.Result;
-                            asyncOperation.DecrementReferenceCount();
-                            return result;
-                        }), this);
-                        return t;
-                    }
-                    return System.Threading.Tasks.Task.FromResult<object>(Result);
-                }
-
-                waitHandle = WaitHandle;
-                return System.Threading.Tasks.Task.Factory.StartNew<object>((Func<object, object>)(o =>
-                {
-                    var asyncOperation = o as AsyncOperationBase<TObject>;
-                    if (asyncOperation == null)
-                        return default(object);
-                    asyncOperation.IncrementReferenceCount();
-                    waitHandle.WaitOne();
-                    var result = (object)asyncOperation.Result;
-                    asyncOperation.DecrementReferenceCount();
-                    return result;
-                }), this);
-#endif
+                return m_taskCompletionSourceTypeless.Task;
             }
         }
 
@@ -412,9 +339,11 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
                 m_CompletedActionT.Invoke(new AsyncOperationHandle<TObject>(this));
                 m_CompletedActionT.Clear();
             }
+            if (m_taskCompletionSource != null)
+                m_taskCompletionSource.TrySetResult(Result);
 
-            if (m_waitHandle != null)
-                m_waitHandle.Set();
+            if (m_taskCompletionSourceTypeless != null)
+                m_taskCompletionSourceTypeless.TrySetResult(Result);
 
             m_InDeferredCallbackQueue = false;
         }
@@ -459,6 +388,22 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         /// <param name="releaseDependenciesOnFailure">When true, failed operations will release any dependencies that succeeded.</param>
         public void Complete(TObject result, bool success, string errorMsg, bool releaseDependenciesOnFailure)
         {
+            Complete(result, success, !string.IsNullOrEmpty(errorMsg) ? new OperationException(errorMsg) : null, releaseDependenciesOnFailure);
+        }
+
+        /// <summary>
+        /// Complete the operation and invoke events.
+        /// </summary>
+        /// <remarks>
+        /// An operation is considered to have failed silently if success is true and if exception isn't null.
+        /// The exception handler will be called in cases of silent failures.
+        /// </remarks>
+        /// <param name="result">The result object for the operation.</param>
+        /// <param name="success">True if successful or if the operation failed silently.</param>
+        /// <param name="exception">The exception if the operation has failed.</param>
+        /// <param name="releaseDependenciesOnFailure">When true, failed operations will release any dependencies that succeeded.</param>
+        public void Complete(TObject result, bool success, Exception exception, bool releaseDependenciesOnFailure = true)
+        {
             if (IsDone)
                 return;
 
@@ -475,8 +420,13 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
                 m_RM.PostDiagnosticEvent(new ResourceManager.DiagnosticEventContext(new AsyncOperationHandle(this), ResourceManager.DiagnosticEventType.AsyncOperationComplete));
             }
 
-            if (m_Status == AsyncOperationStatus.Failed || !string.IsNullOrEmpty(errorMsg))
-                OperationException = new Exception(errorMsg ?? "Unknown error in AsyncOperation");
+            if (m_Status == AsyncOperationStatus.Failed || exception != null)
+            {
+                if (exception == null || string.IsNullOrEmpty(exception.Message))
+                    OperationException = new OperationException($"Unknown error in AsyncOperation : {DebugName}");
+                else
+                    OperationException = exception;
+            }
 
             if (m_Status == AsyncOperationStatus.Failed)
             {
@@ -484,11 +434,11 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
                     ReleaseDependencies();
 
                 if (m_RM != null && m_RM.postProfilerEvents)
-                    m_RM.PostDiagnosticEvent(new ResourceManager.DiagnosticEventContext(new AsyncOperationHandle(this), ResourceManager.DiagnosticEventType.AsyncOperationFail, 0, errorMsg));
+                    m_RM.PostDiagnosticEvent(new ResourceManager.DiagnosticEventContext(new AsyncOperationHandle(this), ResourceManager.DiagnosticEventType.AsyncOperationFail, 0, exception?.ToString()));
 
                 ICachable cachedOperation = this as ICachable;
-                if (cachedOperation != null)
-                    m_RM?.RemoveOperationFromCache(cachedOperation.Hash);
+                if (cachedOperation?.Key != null)
+                    m_RM?.RemoveOperationFromCache(cachedOperation.Key);
 
                 RegisterForDeferredCallbackEvent(false);
             }
@@ -504,6 +454,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         {
             m_RM = rm;
             IsRunning = true;
+            HasExecuted = false;
             if (m_RM != null && m_RM.postProfilerEvents)
             {
                 m_RM.PostDiagnosticEvent(new ResourceManager.DiagnosticEventContext(new AsyncOperationHandle(this), ResourceManager.DiagnosticEventType.AsyncOperationCreate));
@@ -570,7 +521,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         Type IAsyncOperation.ResultType { get { return typeof(TObject); } }
 
         /// <inheritdoc/>
-        void IAsyncOperation.GetDependencies(List<AsyncOperationHandle> deps) => GetDependencies(deps); 
+        void IAsyncOperation.GetDependencies(List<AsyncOperationHandle> deps) => GetDependencies(deps);
 
         /// <inheritdoc/>
         void IAsyncOperation.DecrementReferenceCount() => DecrementReferenceCount();
@@ -579,12 +530,12 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         void IAsyncOperation.IncrementReferenceCount() => IncrementReferenceCount();
 
         /// <inheritdoc/>
-        void IAsyncOperation.InvokeCompletionEvent() => InvokeCompletionEvent(); 
+        void IAsyncOperation.InvokeCompletionEvent() => InvokeCompletionEvent();
 
         /// <inheritdoc/>
         void IAsyncOperation.Start(ResourceManager rm, AsyncOperationHandle dependency, DelegateList<float> updateCallbacks) => Start(rm, dependency, updateCallbacks);
 
-        internal virtual void ReleaseDependencies() { }
+        internal virtual void ReleaseDependencies() {}
 
         /// <inheritdoc/>
         DownloadStatus IAsyncOperation.GetDownloadStatus(HashSet<object> visited) => GetDownloadStatus(visited);

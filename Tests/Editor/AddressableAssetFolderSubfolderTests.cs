@@ -35,7 +35,7 @@ namespace UnityEditor.AddressableAssets.Tests
         protected override void OnInit()
         {
             // Create directories
-            m_TestFolderPath = ConfigFolder;
+            m_TestFolderPath = TestFolder;
             m_AddrParentFolderPath = m_TestFolderPath + "/AddrParentFolder";
             m_AddrChildSubfolderPath = m_AddrParentFolderPath + "/AddrChildSubfolder";
 
@@ -51,15 +51,10 @@ namespace UnityEditor.AddressableAssets.Tests
             m_AddrParentObjPath = m_AddrParentFolderPath + "/addrParentObj.prefab";
             m_ChildObjPath = m_AddrChildSubfolderPath + "/childObj.prefab";
 
-#if UNITY_2018_3_OR_NEWER
             PrefabUtility.SaveAsPrefabAsset(parentObj, m_ParentObjPath);
             PrefabUtility.SaveAsPrefabAsset(addrParentObj, m_AddrParentObjPath);
             PrefabUtility.SaveAsPrefabAsset(childObj, m_ChildObjPath);
-#else
-            PrefabUtility.CreatePrefab(m_ParentObjPath, parentObj);
-            PrefabUtility.CreatePrefab(m_AddrParentObjPath, addrParentObj);
-            PrefabUtility.CreatePrefab(m_ChildObjPath, childObj);
-#endif
+
             // Create groups
             const string parentGroupName = "ParentGroup";
             const string childGroupName = "ChildGroup";
@@ -79,7 +74,8 @@ namespace UnityEditor.AddressableAssets.Tests
             Settings.RemoveGroup(m_ParentGroup);
             Settings.RemoveGroup(m_ChildGroup);
 
-            AssetDatabase.DeleteAsset(m_AddrParentFolderPath);
+            AssetDatabase.DeleteAsset(m_TestFolderPath + "/");
+            AssetDatabase.Refresh();
         }
 
         List<string> GetValidAssetPaths(string path, AddressableAssetSettings settings)
@@ -157,11 +153,9 @@ namespace UnityEditor.AddressableAssets.Tests
 
             GameObject obj = new GameObject("TestObject");
             string objPath = path + "/childObj.prefab";
-#if UNITY_2018_3_OR_NEWER
+     
             PrefabUtility.SaveAsPrefabAsset(obj, objPath);
-#else
-            PrefabUtility.CreatePrefab(objPath, obj);
-#endif
+            
             List<string> assetPaths = EnumerateAddressableFolder(m_AddrParentFolderPath, Settings, false);
             Assert.AreEqual(1, assetPaths.Count);
             Assert.AreEqual(m_ParentObjPath, assetPaths[0]);
@@ -188,16 +182,27 @@ namespace UnityEditor.AddressableAssets.Tests
 
             GameObject obj = new GameObject("TestObject");
             string objPath = path + "/childObj.prefab";
-#if UNITY_2018_3_OR_NEWER
             PrefabUtility.SaveAsPrefabAsset(obj, objPath);
-#else
-            PrefabUtility.CreatePrefab(objPath, obj);
-#endif
             List<string> assetPaths = EnumerateAddressableFolder(path, Settings, true);
             Assert.AreEqual(1, assetPaths.Count);
             Assert.AreEqual(objPath, assetPaths[0]);
 
             AssetDatabase.DeleteAsset(path);
+        }
+
+        [Test]
+        public void WhenFileIsNotInAssetDatabase_EnumerateFiles_DoesNotReturnPath()
+        {
+            string folderPath = m_TestFolderPath + "/TestFolder";
+            AssetDatabase.CreateFolder(m_TestFolderPath, "TestFolder");
+            string filePath = Path.Combine(folderPath, ".hiddenfile");
+            File.Create(filePath).Close();
+
+            List<string> assetPaths = EnumerateAddressableFolder(folderPath, Settings, true);
+            Assert.AreEqual(0, assetPaths.Count);
+
+            File.Delete(filePath);
+            AssetDatabase.DeleteAsset(folderPath);
         }
 
         [Test]

@@ -39,15 +39,9 @@ namespace UnityEditor.AddressableAssets.Tests.AnalyzeRules
 
             prefabA.AddComponent<TestBehaviourWithReference>();
 
-#if UNITY_2018_3_OR_NEWER
             PrefabUtility.SaveAsPrefabAsset(prefabA, k_CheckDupePrefabA);
             PrefabUtility.SaveAsPrefabAsset(prefabB, k_CheckDupePrefabB);
             PrefabUtility.SaveAsPrefabAsset(prefabWithMaterial, k_PrefabWithMaterialPath);
-#else
-            PrefabUtility.CreatePrefab(k_CheckDupePrefabA, prefabA);
-            PrefabUtility.CreatePrefab(k_CheckDupePrefabB, prefabB);
-            PrefabUtility.CreatePrefab(k_PrefabWithMaterialPath, prefabWithMaterial);
-#endif
             AssetDatabase.Refresh();
         }
 
@@ -56,7 +50,11 @@ namespace UnityEditor.AddressableAssets.Tests.AnalyzeRules
         {
             Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene);
             GameObject go = AssetDatabase.LoadAssetAtPath<GameObject>(k_CheckDupePrefabA);
-            PrefabUtility.InstantiatePrefab(go, scene);
+
+            GameObject n = new GameObject("TestGameObject");
+            var refer = n.AddComponent<TestBehaviourWithReference>();
+            refer.Reference = go;
+            SceneManager.MoveGameObjectToScene(n, scene);
             EditorSceneManager.SaveScene(scene, k_ScenePath);
 
             var rule = new CheckSceneDupeDependencies();
@@ -93,6 +91,27 @@ namespace UnityEditor.AddressableAssets.Tests.AnalyzeRules
             //Cleanup
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene);
         }
+        
+        [Test]
+        public void CheckSceneDupe_SceneDependenciesDoNotIncludeEditorOnly()
+        {
+            Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene);
+            GameObject go = PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(k_PrefabWithMaterialPath), scene) as GameObject;
+            go.tag = "EditorOnly";
+            EditorSceneManager.SaveScene(scene, k_ScenePath);
+
+            var rule = new CheckSceneDupeDependencies();
+
+            EditorBuildSettingsScene editorScene = new EditorBuildSettingsScene(k_ScenePath, true);
+            rule.BuiltInResourcesToDependenciesMap(new string[] { editorScene.path });
+            rule.IntersectResourcesDepedenciesWithBundleDependencies(new List<GUID>() { new GUID(AssetDatabase.AssetPathToGUID(k_CheckDupeMyMaterial)) });
+
+            Assert.IsTrue(rule.m_ResourcesToDependencies.ContainsKey(editorScene.path));
+            Assert.AreEqual(0, rule.m_ResourcesToDependencies[editorScene.path].Count);
+
+            //Cleanup
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene);
+        }
 
         [Test]
         public void CheckSceneDupe_AllSceneToBundleDependenciesAreReturned()
@@ -107,14 +126,12 @@ namespace UnityEditor.AddressableAssets.Tests.AnalyzeRules
             rule.BuiltInResourcesToDependenciesMap(new string[] { editorScene.path });
             rule.IntersectResourcesDepedenciesWithBundleDependencies(new List<GUID>()
             {
-                new GUID(AssetDatabase.AssetPathToGUID(k_CheckDupeMyMaterial)),
-                new GUID(AssetDatabase.AssetPathToGUID(k_PrefabWithMaterialPath))
+                new GUID(AssetDatabase.AssetPathToGUID(k_CheckDupeMyMaterial))
             });
 
             Assert.IsTrue(rule.m_ResourcesToDependencies.ContainsKey(editorScene.path));
-            Assert.AreEqual(2, rule.m_ResourcesToDependencies[editorScene.path].Count);
+            Assert.AreEqual(1, rule.m_ResourcesToDependencies[editorScene.path].Count);
             Assert.IsTrue(rule.m_ResourcesToDependencies[editorScene.path].Contains(new GUID(AssetDatabase.AssetPathToGUID(k_CheckDupeMyMaterial))));
-            Assert.IsTrue(rule.m_ResourcesToDependencies[editorScene.path].Contains(new GUID(AssetDatabase.AssetPathToGUID(k_PrefabWithMaterialPath))));
 
             //Cleanup
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene);

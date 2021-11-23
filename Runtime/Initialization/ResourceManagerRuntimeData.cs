@@ -102,7 +102,7 @@ namespace UnityEngine.AddressableAssets.Initialization
                 m_CertificateHandlerType.Value = value;
             }
         }
-#if UNITY_2019_3_OR_NEWER
+        
         [SerializeField]
         string m_AddressablesVersion;
 
@@ -120,7 +120,6 @@ namespace UnityEngine.AddressableAssets.Initialization
                 m_AddressablesVersion = value;
             }
         }
-#endif
 
         [SerializeField]
         int m_maxConcurrentWebRequests = 500;
@@ -128,5 +127,12 @@ namespace UnityEngine.AddressableAssets.Initialization
         /// The maximum number of concurrent web requests.  This value will be clamped from 1 to 1024.
         /// </summary>
         public int MaxConcurrentWebRequests { get { return m_maxConcurrentWebRequests; } set { m_maxConcurrentWebRequests = Mathf.Clamp(value, 1, 1024); } }
+        
+        [SerializeField]
+        int m_CatalogRequestsTimeout = 0;
+        /// <summary>
+        /// The time until a catalog hash or json UnityWebRequest download will timeout in seconds. 0 for Default timeout.
+        /// </summary>
+        public int CatalogRequestsTimeout { get { return m_CatalogRequestsTimeout; } set { m_CatalogRequestsTimeout = value < 0 ? 0 : value; } }
     }
 }

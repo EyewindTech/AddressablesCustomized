@@ -101,7 +101,8 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
 #if UNITY_2019_3_OR_NEWER
                 AddressablesVersion = PackageManager.PackageInfo.FindForAssembly(typeof(Addressables).Assembly)?.version,
 #endif
-                MaxConcurrentWebRequests = aaSettings.MaxConcurrentWebRequests
+                MaxConcurrentWebRequests = aaSettings.MaxConcurrentWebRequests,
+                CatalogRequestsTimeout = aaSettings.CatalogRequestsTimeout
             };
             m_Linker = UnityEditor.Build.Pipeline.Utilities.LinkXmlGenerator.CreateDefault();
             m_Linker.AddAssemblies(new[] { typeof(Addressables).Assembly, typeof(UnityEngine.ResourceManagement.ResourceManager).Assembly });
@@ -137,19 +138,61 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             }
         }
 
-        internal string GetBuiltInShaderBundleName(AddressableAssetsBuildContext aaContext)
+        internal static string GetBuiltInShaderBundleNamePrefix(AddressableAssetsBuildContext aaContext)
+        {
+            return GetBuiltInShaderBundleNamePrefix(aaContext.Settings);
+        }
+        
+        internal static string GetBuiltInShaderBundleNamePrefix(AddressableAssetSettings settings)
         {
             string value = "";
-            switch (aaContext.Settings.ShaderBundleNaming)
+            switch (settings.ShaderBundleNaming)
             {
                 case ShaderBundleNaming.DefaultGroupGuid:
-                    value = aaContext.Settings.DefaultGroup.Guid;
+                    value = settings.DefaultGroup.Guid;
                     break;
                 case ShaderBundleNaming.ProjectName:
                     value = Hash128.Compute(GetProjectName()).ToString();
                     break;
                 case ShaderBundleNaming.Custom:
-                    value = aaContext.Settings.ShaderBundleCustomNaming;
+                    value = settings.ShaderBundleCustomNaming;
+                    break;
+            }
+
+            return value;
+        }
+
+        void AddBundleProvider(BundledAssetGroupSchema schema)
+        {
+            var bundleProviderId = schema.GetBundleCachedProviderId();
+
+            if (!m_CreatedProviderIds.Contains(bundleProviderId))
+            {
+                m_CreatedProviderIds.Add(bundleProviderId);
+                var bundleProviderType = schema.AssetBundleProviderType.Value;
+                var bundleProviderData = ObjectInitializationData.CreateSerializedInitializationData(bundleProviderType, bundleProviderId);
+                m_ResourceProviderData.Add(bundleProviderData);
+            }
+        }
+
+        internal static string GetMonoScriptBundleNamePrefix(AddressableAssetsBuildContext aaContext)
+        {
+            return GetMonoScriptBundleNamePrefix(aaContext.Settings);
+        }
+
+        internal static string GetMonoScriptBundleNamePrefix(AddressableAssetSettings settings)
+        {
+            string value = null;
+            switch (settings.MonoScriptBundleNaming)
+            {
+                case MonoScriptBundleNaming.ProjectName:
+                    value = Hash128.Compute(GetProjectName()).ToString();
+                    break;
+                case MonoScriptBundleNaming.DefaultGroupGuid:
+                    value = settings.DefaultGroup.Guid;
+                    break;
+                case MonoScriptBundleNaming.Custom:
+                    value = settings.MonoScriptBundleCustomNaming;
                     break;
             }
 
@@ -185,8 +228,15 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                     buildTargetGroup,
                     aaContext.Settings.buildSettings.bundleBuildPath);
 
-                var builtinShaderBundleName = GetBuiltInShaderBundleName(aaContext) + "_unitybuiltinshaders.bundle";
-                var buildTasks = RuntimeDataBuildTasks(builtinShaderBundleName);
+                var builtinShaderBundleName = GetBuiltInShaderBundleNamePrefix(aaContext) + "_unitybuiltinshaders.bundle";
+
+                var schema = aaContext.Settings.DefaultGroup.GetSchema<BundledAssetGroupSchema>();
+                AddBundleProvider(schema);
+
+                string monoScriptBundleName = GetMonoScriptBundleNamePrefix(aaContext);
+                if (!string.IsNullOrEmpty(monoScriptBundleName))
+                    monoScriptBundleName += "_monoscripts.bundle";
+                var buildTasks = RuntimeDataBuildTasks(builtinShaderBundleName, monoScriptBundleName);
                 buildTasks.Add(extractData);
 
                 IBundleBuildResults results;
@@ -230,17 +280,6 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                     }
                 }
 
-                // We need to have the bundleRename map which is calculated in PostProcessBundles. It would be nice to move that process
-                // to a build task, but there are lots of dependencies and it is messy to move.
-                if (ProjectConfigData.GenerateBuildLayout)
-                {
-                    List<IBuildTask> tasks = new List<IBuildTask>();
-                    var buildLayoutTask = new BuildLayoutGenerationTask();
-                    buildLayoutTask.m_BundleNameRemap = bundleRenameMap;
-                    tasks.Add(buildLayoutTask);
-                    BuildTasksRunner.Run(tasks, extractData.m_BuildContext);
-                }
-
                 ProcessCatalogEntriesForBuild(aaContext, m_Log, groups, builderInput, extractData.WriteData, carryOverCachedState, m_BundleToInternalId);
                 foreach (var postUpdateCatalogCallback in postCatalogUpdateCallbacks)
                     postUpdateCatalogCallback.Invoke();
@@ -256,10 +295,24 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                         m_Linker.AddSerializedClass(resultValue.GetType().GetProperty("includedSerializeReferenceFQN").GetValue(resultValue) as System.Collections.Generic.IEnumerable<string>);
 #endif
                 }
+
+
+                if (ProjectConfigData.GenerateBuildLayout)
+                {
+                    using (var progressTracker = new UnityEditor.Build.Pipeline.Utilities.ProgressTracker())
+                    {
+                        progressTracker.UpdateTask("Generating Build Layout");
+                        List<IBuildTask> tasks = new List<IBuildTask>();
+                        var buildLayoutTask = new BuildLayoutGenerationTask();
+                        buildLayoutTask.m_BundleNameRemap = bundleRenameMap;
+                        tasks.Add(buildLayoutTask);
+                        BuildTasksRunner.Run(tasks, extractData.m_BuildContext);
+                    }
+                }
             }
 
             var contentCatalog = new ContentCatalogData(ResourceManagerRuntimeData.kCatalogAddress);
-            contentCatalog.SetData(aaContext.locations, aaContext.Settings.OptimizeCatalogSize);
+            contentCatalog.SetData(aaContext.locations.OrderBy(f => f.InternalId).ToList(), aaContext.Settings.OptimizeCatalogSize);
 
             contentCatalog.ResourceProviderData.AddRange(m_ResourceProviderData);
             foreach (var t in aaContext.providerTypes)
@@ -308,11 +361,18 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                 var remoteCatalogLoadPath = aaContext.Settings.BuildRemoteCatalog ? aaContext.Settings.RemoteCatalogLoadPath.GetValue(aaContext.Settings) : string.Empty;
                 if (ContentUpdateScript.SaveContentState(aaContext.locations, tempPath, allEntries, extractData.DependencyData, playerBuildVersion, remoteCatalogLoadPath, carryOverCachedState))
                 {
+                    string contentStatePath = ContentUpdateScript.GetContentStateDataPath(false);
                     try
                     {
-                        var contentStatePath = ContentUpdateScript.GetContentStateDataPath(false);
                         File.Copy(tempPath, contentStatePath, true);
                         builderInput.Registry.AddFile(contentStatePath);
+                    }
+                    catch (UnauthorizedAccessException uae)
+                    {
+                        if (!AddressableAssetUtility.IsVCAssetOpenForEdit(contentStatePath))
+                            Debug.LogErrorFormat("Cannot access the file {0}. It may be locked by version control.", contentStatePath);
+                        else
+                            Debug.LogException(uae);
                     }
                     catch (Exception e)
                     {
@@ -407,7 +467,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             string[] dependencyHashes = null;
             if (aaContext.Settings.BuildRemoteCatalog)
             {
-                dependencyHashes = CreateRemoteCatalog(jsonText, aaContext.runtimeData.CatalogLocations, aaContext.Settings, builderInput);
+                dependencyHashes = CreateRemoteCatalog(jsonText, aaContext.runtimeData.CatalogLocations, aaContext.Settings, builderInput, new ProviderLoadRequestOptions() {IgnoreFailures = true});
             }
 
             aaContext.runtimeData.CatalogLocations.Add(new ResourceLocationData(
@@ -420,7 +480,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             return true;
         }
 
-        internal string GetProjectName()
+        internal static string GetProjectName()
         {
             return new DirectoryInfo(Path.GetDirectoryName(Application.dataPath)).Name;
         }
@@ -468,6 +528,8 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             };
 
             var buildParams = new BundleBuildParameters(builderInput.Target, builderInput.TargetGroup, Path.GetDirectoryName(filepath));
+            if (builderInput.Target == BuildTarget.WebGL)
+                buildParams.BundleCompression = BuildCompression.LZ4Runtime;
             var retCode = ContentPipeline.BuildAssetBundles(buildParams, bundleBuildContent, out IBundleBuildResults result, buildTasks, m_Log);
 
             if (Directory.Exists(tempFolderPath))
@@ -496,7 +558,10 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
         {
             foreach (var loc in assetEntries)
             {
-                GUID guid = new GUID(loc.guid);
+                AddressableAssetEntry processedEntry = loc;
+                if (loc.IsFolder && loc.SubAssets.Count > 0)
+                    processedEntry = loc.SubAssets[0];
+                GUID guid = new GUID(processedEntry.guid);
                 //For every entry in the write data we need to ensure the BundleFileId is set so we can save it correctly in the cached state
                 if (writeData.AssetToFiles.TryGetValue(guid, out List<string> files))
                 {
@@ -510,8 +575,8 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                         loc.BundleFileId = catalogEntry.InternalId;
 
                         //This is where we strip out the temporary hash added to the bundle name for Content Update for the AssetEntry
-                        if(loc.parentGroup?.GetSchema<BundledAssetGroupSchema>()?.BundleNaming ==
-                          BundledAssetGroupSchema.BundleNamingStyle.NoHash)
+                        if (loc.parentGroup?.GetSchema<BundledAssetGroupSchema>()?.BundleNaming ==
+                            BundledAssetGroupSchema.BundleNamingStyle.NoHash)
                         {
                             loc.BundleFileId = StripHashFromBundleLocation(loc.BundleFileId);
                         }
@@ -605,16 +670,9 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             if (!string.IsNullOrEmpty(errorStr))
                 return errorStr;
 
-            var bundledProviderId = schema.GetBundleCachedProviderId();
-            var assetProviderId = schema.GetAssetCachedProviderId();
-            if (!m_CreatedProviderIds.Contains(bundledProviderId))
-            {
-                m_CreatedProviderIds.Add(bundledProviderId);
-                var bundleProviderType = schema.AssetBundleProviderType.Value;
-                var bundleProviderData = ObjectInitializationData.CreateSerializedInitializationData(bundleProviderType, bundledProviderId);
-                m_ResourceProviderData.Add(bundleProviderData);
-            }
+            AddBundleProvider(schema);
 
+            var assetProviderId = schema.GetAssetCachedProviderId();
             if (!m_CreatedProviderIds.Contains(assetProviderId))
             {
                 m_CreatedProviderIds.Add(assetProviderId);
@@ -622,6 +680,14 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                 var assetProviderData = ObjectInitializationData.CreateSerializedInitializationData(assetProviderType, assetProviderId);
                 m_ResourceProviderData.Add(assetProviderData);
             }
+
+#if UNITY_2022_1_OR_NEWER
+           string loadPath = schema.LoadPath.GetValue(aaContext.Settings);
+           if (loadPath.StartsWith("http://") && PlayerSettings.insecureHttpOption == InsecureHttpOption.NotAllowed)
+                Addressables.LogWarning($"Addressable group {assetGroup.Name} uses insecure http for its load path.  To allow http connections for UnityWebRequests, change your settings in Edit > Project Settings > Player > Other Settings > Configuration > Allow downloads over HTTP.");
+#endif
+            if (schema.Compression == BundledAssetGroupSchema.BundleCompressionMode.LZMA && aaContext.runtimeData.BuildTarget == BuildTarget.WebGL.ToString())
+                Addressables.LogWarning($"Addressable group {assetGroup.Name} uses LZMA compression, which cannot be decompressed on WebGL. Use LZ4 compression instead.");
 
             var bundleInputDefs = new List<AssetBundleBuild>();
             var list = PrepGroupBundlePacking(assetGroup, bundleInputDefs, schema);
@@ -657,7 +723,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                 bundleBuild.assetBundleName = hashedAssetBundleName;
                 bundleInputDefs[i] = bundleBuild;
 
-                if(bundleToAssetGroup != null)
+                if (bundleToAssetGroup != null)
                     bundleToAssetGroup.Add(hashedAssetBundleName, assetGroupGuid);
             }
             return generatedUniqueNames;
@@ -705,11 +771,21 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             throw new Exception("Invalid naming mode.");
         }
 
-        internal static List<AddressableAssetEntry> PrepGroupBundlePacking(AddressableAssetGroup assetGroup, List<AssetBundleBuild> bundleInputDefs, BundledAssetGroupSchema schema, Func<AddressableAssetEntry, bool> entryFilter = null)
+        /// <summary>
+        /// Processes an AddressableAssetGroup and generates AssetBundle input definitions based on the BundlePackingMode.
+        /// </summary>
+        /// <param name="assetGroup">The AddressableAssetGroup to be processed.</param>
+        /// <param name="bundleInputDefs">The list of bundle definitions fed into the build pipeline AssetBundleBuild</param>
+        /// <param name="schema">The BundledAssetGroupSchema of used to process the assetGroup.</param>
+        /// <param name="entryFilter">A filter to remove AddressableAssetEntries from being processed in the build.</param>
+        /// <returns>The total list of AddressableAssetEntries that were processed.</returns>
+        public static List<AddressableAssetEntry> PrepGroupBundlePacking(AddressableAssetGroup assetGroup, List<AssetBundleBuild> bundleInputDefs, BundledAssetGroupSchema schema, Func<AddressableAssetEntry, bool> entryFilter = null)
         {
             var combinedEntries = new List<AddressableAssetEntry>();
             var packingMode = schema.BundleMode;
             var namingMode = schema.InternalBundleIdMode;
+            bool ignoreUnsupportedFilesInBuild = assetGroup.Settings.IgnoreUnsupportedFilesInBuild;
+
             switch (packingMode)
             {
                 case BundledAssetGroupSchema.BundlePackingMode.PackTogether:
@@ -722,7 +798,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                         a.GatherAllAssets(allEntries, true, true, false, entryFilter);
                     }
                     combinedEntries.AddRange(allEntries);
-                    GenerateBuildInputDefinitions(allEntries, bundleInputDefs, CalculateGroupHash(namingMode, assetGroup, allEntries), "all");
+                    GenerateBuildInputDefinitions(allEntries, bundleInputDefs, CalculateGroupHash(namingMode, assetGroup, allEntries), "all", ignoreUnsupportedFilesInBuild);
                 } break;
                 case BundledAssetGroupSchema.BundlePackingMode.PackSeparately:
                 {
@@ -733,7 +809,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                         var allEntries = new List<AddressableAssetEntry>();
                         a.GatherAllAssets(allEntries, true, true, false, entryFilter);
                         combinedEntries.AddRange(allEntries);
-                        GenerateBuildInputDefinitions(allEntries, bundleInputDefs, CalculateGroupHash(namingMode, assetGroup, allEntries), a.address);
+                        GenerateBuildInputDefinitions(allEntries, bundleInputDefs, CalculateGroupHash(namingMode, assetGroup, allEntries), a.address, ignoreUnsupportedFilesInBuild);
                     }
                 } break;
                 case BundledAssetGroupSchema.BundlePackingMode.PackTogetherByLabel:
@@ -763,7 +839,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                             a.GatherAllAssets(allEntries, true, true, false, entryFilter);
                         }
                         combinedEntries.AddRange(allEntries);
-                        GenerateBuildInputDefinitions(allEntries, bundleInputDefs, CalculateGroupHash(namingMode, assetGroup, allEntries), entryGroup.Key);
+                        GenerateBuildInputDefinitions(allEntries, bundleInputDefs, CalculateGroupHash(namingMode, assetGroup, allEntries), entryGroup.Key, ignoreUnsupportedFilesInBuild);
                     }
                 } break;
                 default:
@@ -772,12 +848,13 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             return combinedEntries;
         }
 
-        internal static void GenerateBuildInputDefinitions(List<AddressableAssetEntry> allEntries, List<AssetBundleBuild> buildInputDefs, string groupGuid, string address)
+        internal static void GenerateBuildInputDefinitions(List<AddressableAssetEntry> allEntries, List<AssetBundleBuild> buildInputDefs, string groupGuid, string address, bool ignoreUnsupportedFilesInBuild)
         {
             var scenes = new List<AddressableAssetEntry>();
             var assets = new List<AddressableAssetEntry>();
             foreach (var e in allEntries)
             {
+                ThrowExceptionIfInvalidFiletypeOrAddress(e, ignoreUnsupportedFilesInBuild);
                 if (string.IsNullOrEmpty(e.AssetPath))
                     continue;
                 if (e.IsScene)
@@ -791,6 +868,19 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                 buildInputDefs.Add(GenerateBuildInputDefinition(scenes, groupGuid + "_scenes_" + address + ".bundle"));
         }
 
+        private static void ThrowExceptionIfInvalidFiletypeOrAddress(AddressableAssetEntry entry, bool ignoreUnsupportedFilesInBuild)
+        {
+            if (entry.guid.Length > 0 && entry.address.Contains("[") && entry.address.Contains("]"))
+                throw new Exception($"Address '{entry.address}' cannot contain '[ ]'.");
+            if (entry.MainAssetType == typeof(DefaultAsset) && !AssetDatabase.IsValidFolder(entry.AssetPath))
+            {
+                if (ignoreUnsupportedFilesInBuild)
+                    Debug.LogWarning($"Cannot recognize file type for entry located at '{entry.AssetPath}'. Asset location will be ignored.");
+                else
+                    throw new Exception($"Cannot recognize file type for entry located at '{entry.AssetPath}'. Asset import failed for using an unsupported file type.");
+            }
+        }
+
         internal static AssetBundleBuild GenerateBuildInputDefinition(List<AddressableAssetEntry> assets, string name)
         {
             var assetInternalIds = new HashSet<string>();
@@ -801,7 +891,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             return assetsInputDef;
         }
 
-        static string[] CreateRemoteCatalog(string jsonText, List<ResourceLocationData> locations, AddressableAssetSettings aaSettings, AddressablesDataBuilderInput builderInput)
+        static string[] CreateRemoteCatalog(string jsonText, List<ResourceLocationData> locations, AddressableAssetSettings aaSettings, AddressablesDataBuilderInput builderInput, ProviderLoadRequestOptions catalogLoadOptions)
         {
             string[] dependencyHashes = null;
 
@@ -832,18 +922,18 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
 
                 var remoteHashLoadPath = remoteLoadFolder + versionedFileName + ".hash";
                 var remoteHashLoadLocation = new ResourceLocationData(
-                    new[] {dependencyHashes[(int) ContentCatalogProvider.DependencyHashIndex.Remote]},
+                    new[] {dependencyHashes[(int)ContentCatalogProvider.DependencyHashIndex.Remote]},
                     remoteHashLoadPath,
                     typeof(TextDataProvider), typeof(string));
-                remoteHashLoadLocation.Data = new ProviderLoadRequestOptions() {IgnoreFailures = true};
+                remoteHashLoadLocation.Data = catalogLoadOptions.Copy();
                 locations.Add(remoteHashLoadLocation);
 
                 var cacheLoadPath = "{UnityEngine.Application.persistentDataPath}/com.unity.addressables" + versionedFileName + ".hash";
                 var cacheLoadLocation = new ResourceLocationData(
-                    new[] {dependencyHashes[(int) ContentCatalogProvider.DependencyHashIndex.Cache]},
+                    new[] {dependencyHashes[(int)ContentCatalogProvider.DependencyHashIndex.Cache]},
                     cacheLoadPath,
                     typeof(TextDataProvider), typeof(string));
-                cacheLoadLocation.Data = new ProviderLoadRequestOptions() {IgnoreFailures = true};
+                cacheLoadLocation.Data = catalogLoadOptions.Copy();
                 locations.Add(cacheLoadLocation);
             }
 
@@ -854,7 +944,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
         // and isn't needed for most tests.
         internal static bool s_SkipCompilePlayerScripts = false;
 
-        static IList<IBuildTask> RuntimeDataBuildTasks(string builtinShaderBundleName)
+        static IList<IBuildTask> RuntimeDataBuildTasks(string builtinShaderBundleName, string monoScriptBundleName)
         {
             var buildTasks = new List<IBuildTask>();
 
@@ -873,6 +963,8 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             buildTasks.Add(new AddHashToBundleNameTask());
             buildTasks.Add(new StripUnusedSpriteSources());
             buildTasks.Add(new CreateBuiltInShadersBundle(builtinShaderBundleName));
+            if (!string.IsNullOrEmpty(monoScriptBundleName))
+                buildTasks.Add(new CreateMonoScriptBundle(monoScriptBundleName));
             buildTasks.Add(new PostDependencyCallback());
 
             // Packing
@@ -892,7 +984,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             return buildTasks;
         }
 
-        static void CopyFileWithTimestampIfDifferent(string srcPath, string destPath, IBuildLogger log)
+        static void MoveFileToDestinationWithTimestampIfDifferent(string srcPath, string destPath, IBuildLogger log)
         {
             if (srcPath == destPath)
                 return;
@@ -903,12 +995,14 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             if (destTime == time)
                 return;
 
-            using (log.ScopedStep(LogLevel.Verbose, "Copy File", $"{srcPath} -> {destPath}"))
+            using (log.ScopedStep(LogLevel.Verbose, "Move File", $"{srcPath} -> {destPath}"))
             {
                 var directory = Path.GetDirectoryName(destPath);
-                if (!string.IsNullOrEmpty(directory))
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                     Directory.CreateDirectory(directory);
-                File.Copy(srcPath, destPath, true);
+                else if (File.Exists(destPath))
+                    File.Delete(destPath);
+                File.Move(srcPath, destPath);
             }
         }
 
@@ -931,22 +1025,31 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                     {
                         Crc = schema.UseAssetBundleCrc ? info.Crc : 0,
                         UseCrcForCachedBundle = schema.UseAssetBundleCrcForCachedBundles,
+                        UseUnityWebRequestForLocalBundles = schema.UseUnityWebRequestForLocalBundles,
                         Hash = schema.UseAssetBundleCache ? info.Hash.ToString() : "",
                         ChunkedTransfer = schema.ChunkedTransfer,
                         RedirectLimit = schema.RedirectLimit,
                         RetryCount = schema.RetryCount,
                         Timeout = schema.Timeout,
                         BundleName = Path.GetFileNameWithoutExtension(info.FileName),
+                        AssetLoadMode = schema.AssetLoadMode,
                         BundleSize = GetFileSize(info.FileName),
                         ClearOtherCachedVersionsWhenLoaded = schema.AssetBundledCacheClearBehavior == BundledAssetGroupSchema.CacheClearBehavior.ClearWhenWhenNewVersionLoaded
                     };
                     dataEntry.Data = requestOptions;
-
-                    int extensionLength = Path.GetExtension(outputBundles[i]).Length;
-                    string[] deconstructedBundleName = outputBundles[i].Substring(0, outputBundles[i].Length - extensionLength).Split('_');
-                    string reconstructedBundleName = string.Join("_", deconstructedBundleName, 1, deconstructedBundleName.Length - 1) + ".bundle";
-
-                    outputBundles[i] = ConstructAssetBundleName(assetGroup, schema, info, reconstructedBundleName);
+                    
+                    if (assetGroup == assetGroup.Settings.DefaultGroup && info.Dependencies.Length == 0 && !string.IsNullOrEmpty(info.FileName) && (info.FileName.EndsWith("_unitybuiltinshaders.bundle") || info.FileName.EndsWith("_monoscripts.bundle")))
+                    {
+                        outputBundles[i] = ConstructAssetBundleName(null, schema, info, outputBundles[i]);
+                    }
+                    else
+                    {
+                        int extensionLength = Path.GetExtension(outputBundles[i]).Length;
+                        string[] deconstructedBundleName = outputBundles[i].Substring(0, outputBundles[i].Length - extensionLength).Split('_');
+                        string reconstructedBundleName = string.Join("_", deconstructedBundleName, 1, deconstructedBundleName.Length - 1) + ".bundle";
+                        outputBundles[i] = ConstructAssetBundleName(assetGroup, schema, info, reconstructedBundleName);
+                    }
+                    
                     dataEntry.InternalId = dataEntry.InternalId.Remove(dataEntry.InternalId.Length - buildBundles[i].Length) + outputBundles[i];
                     dataEntry.Keys[0] = outputBundles[i];
                     ReplaceDependencyKeys(buildBundles[i], outputBundles[i], locations);
@@ -966,9 +1069,12 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
 
                 var targetPath = Path.Combine(path, outputBundles[i]);
                 var srcPath = Path.Combine(assetGroup.Settings.buildSettings.bundleBuildPath, buildBundles[i]);
+                
+                if (assetGroup.GetSchema<BundledAssetGroupSchema>()?.BundleNaming == BundledAssetGroupSchema.BundleNamingStyle.NoHash)
+                    outputBundles[i] = StripHashFromBundleLocation(outputBundles[i]);
+                
                 bundleRenameMap.Add(buildBundles[i], outputBundles[i]);
-                CopyFileWithTimestampIfDifferent(srcPath, targetPath, m_Log);
-
+                MoveFileToDestinationWithTimestampIfDifferent(srcPath, targetPath, m_Log);
                 AddPostCatalogUpdatesInternal(assetGroup, postCatalogUpdateCallbacks, dataEntry, targetPath, registry);
 
                 registry.AddFile(targetPath);
@@ -983,28 +1089,38 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                 postCatalogUpdates.Add(() =>
                 {
                     //This is where we strip out the temporary hash for the final bundle location and filename
-                    string bundleNameWithoutHash = StripHashFromBundleLocation(targetBundlePath);
+                    string bundlePathWithoutHash = StripHashFromBundleLocation(targetBundlePath);
                     if (File.Exists(targetBundlePath))
                     {
-                        if (File.Exists(bundleNameWithoutHash))
-                            File.Delete(bundleNameWithoutHash);
-                        string destFolder = Path.GetDirectoryName(bundleNameWithoutHash);
+                        if (File.Exists(bundlePathWithoutHash))
+                            File.Delete(bundlePathWithoutHash);
+                        string destFolder = Path.GetDirectoryName(bundlePathWithoutHash);
                         if (!string.IsNullOrEmpty(destFolder) && !Directory.Exists(destFolder))
                             Directory.CreateDirectory(destFolder);
 
-                        File.Move(targetBundlePath, bundleNameWithoutHash);
+                        File.Move(targetBundlePath, bundlePathWithoutHash);
                     }
                     if (registry != null)
                     {
-                        if (!registry.ReplaceBundleEntry(targetBundlePath, bundleNameWithoutHash))
+                        if (!registry.ReplaceBundleEntry(targetBundlePath, bundlePathWithoutHash))
                             Debug.LogErrorFormat("Unable to find registered file for bundle {0}.", targetBundlePath);
                     }
-
+                    
                     if (dataEntry != null)
-                        dataEntry.InternalId = StripHashFromBundleLocation(dataEntry.InternalId);
-
+                        if (DataEntryDiffersFromBundleFilename(dataEntry, bundlePathWithoutHash))
+                            dataEntry.InternalId = StripHashFromBundleLocation(dataEntry.InternalId);
                 });
             }
+        }
+
+        // if false, there is no need to remove the hash from dataEntry.InternalId
+        bool DataEntryDiffersFromBundleFilename(ContentCatalogDataEntry dataEntry, string bundlePathWithoutHash)
+        {
+            string dataEntryId = dataEntry.InternalId;
+            string dataEntryFilename = Path.GetFileName(dataEntryId);
+            string bundleFileName = Path.GetFileName(bundlePathWithoutHash);
+            
+            return dataEntryFilename != bundleFileName;
         }
 
         /// <summary>
@@ -1017,12 +1133,15 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
         /// <returns>Returns the asset bundle name with the provided information.</returns>
         protected virtual string ConstructAssetBundleName(AddressableAssetGroup assetGroup, BundledAssetGroupSchema schema, BundleDetails info, string assetBundleName)
         {
-            string groupName = assetGroup.Name.Replace(" ", "").Replace('\\', '/').Replace("//", "/").ToLower();
-            assetBundleName = groupName + "_" + assetBundleName;
+            if (assetGroup != null)
+            {
+                string groupName = assetGroup.Name.Replace(" ", "").Replace('\\', '/').Replace("//", "/").ToLower();
+                assetBundleName = groupName + "_" + assetBundleName;
+            }
+            
             string bundleNameWithHashing = BuildUtility.GetNameWithHashNaming(schema.BundleNaming, info.Hash.ToString(), assetBundleName);
             //For no hash, we need the hash temporarily for content update purposes.  This will be stripped later on.
-            if (assetGroup.GetSchema<BundledAssetGroupSchema>()?.BundleNaming ==
-                BundledAssetGroupSchema.BundleNamingStyle.NoHash)
+            if (schema.BundleNaming == BundledAssetGroupSchema.BundleNamingStyle.NoHash)
             {
                 bundleNameWithHashing = bundleNameWithHashing.Replace(".bundle", "_" + info.Hash.ToString() + ".bundle");
             }

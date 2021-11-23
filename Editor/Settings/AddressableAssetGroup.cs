@@ -400,6 +400,8 @@ namespace UnityEditor.AddressableAssets.Settings
                     }
                     if (m_SchemaSet.Schemas[i].Group == null)
                         m_SchemaSet.Schemas[i].Group = this;
+
+                    m_SchemaSet.Schemas[i].Validate();
                 }
             }
 
@@ -501,7 +503,7 @@ namespace UnityEditor.AddressableAssets.Settings
         /// <param name="guid">The asset guid.</param>
         /// <param name="includeImplicit">Whether or not to include implicit asset entries in the search.</param>
         /// <returns></returns>
-        internal virtual AddressableAssetEntry GetAssetEntry(string guid, bool includeImplicit)
+        public virtual AddressableAssetEntry GetAssetEntry(string guid, bool includeImplicit)
         {
             AddressableAssetEntry entry;
             if (m_EntryMap.TryGetValue(guid, out entry))
@@ -511,11 +513,10 @@ namespace UnityEditor.AddressableAssets.Settings
 
             if (includeImplicit)
             {
+                string assetPath = AssetDatabase.GUIDToAssetPath(guid);
                 foreach (var e in entries)
                 {
-                    var implicitEntries = new List<AddressableAssetEntry>();
-                    e.GatherImplicitEntries(implicitEntries);
-                    var impEntry = implicitEntries.FirstOrDefault(ie => ie.guid == guid);
+                    var impEntry = e.GetImplicitEntry(assetPath);
                     if (impEntry != null)
                         return impEntry;
                 }

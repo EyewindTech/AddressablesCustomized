@@ -18,10 +18,7 @@ using UnityEngine.ResourceManagement.Util;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-
-#if UNITY_2019_3_OR_NEWER
 using UnityEditor.Experimental;
-#endif
 
 namespace UnityEditor.AddressableAssets.Build.DataBuilders
 {
@@ -103,13 +100,12 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             aaContext.runtimeData.LogResourceManagerExceptions = aaSettings.buildSettings.LogResourceManagerExceptions;
             aaContext.runtimeData.ProfileEvents = ProjectConfigData.PostProfilerEvents;
             aaContext.runtimeData.MaxConcurrentWebRequests = aaSettings.MaxConcurrentWebRequests;
+            aaContext.runtimeData.CatalogRequestsTimeout = aaSettings.CatalogRequestsTimeout;
             aaContext.runtimeData.CatalogLocations.Add(new ResourceLocationData(
                 new[] { ResourceManagerRuntimeData.kCatalogAddress },
                 string.Format(m_PathFormat, "file://{UnityEngine.Application.dataPath}/../", "catalog"),
                 typeof(ContentCatalogProvider), typeof(ContentCatalogData)));
-#if UNITY_2019_3_OR_NEWER
             aaContext.runtimeData.AddressablesVersion = PackageManager.PackageInfo.FindForAssembly(typeof(Addressables).Assembly)?.version;
-#endif
             m_CreatedProviderIds = new Dictionary<string, VirtualAssetBundleRuntimeData>();
             m_ResourceProviderData = new List<ObjectInitializationData>();
 
@@ -188,7 +184,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                     string originalBundleName = bd.Key as string;
                     string newBundleName = BuildUtility.GetNameWithHashNaming(schema.BundleNaming, hash, originalBundleName);
                     bundleLocData.InternalId = bundleLocData.InternalId.Remove(bundleLocData.InternalId.Length - originalBundleName.Length) + newBundleName;
-
+                    var abb = m_AllBundleInputDefinitions.FirstOrDefault(a => a.assetBundleName == originalBundleName);
                     var virtualBundleName = AddressablesRuntimeProperties.EvaluateString(bundleLocData.InternalId);
                     var bundleData = new VirtualAssetBundle(virtualBundleName, isLocalBundle, crc, hash);
 
@@ -196,8 +192,12 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                     long headerSize = 0;
                     foreach (var a in bd.Value)
                     {
-                        var size = ComputeSize(a);
-                        bundleData.Assets.Add(new VirtualAssetBundleEntry(a, size));
+                        var i = Array.IndexOf(abb.addressableNames, a);
+                        var assetPath = abb.assetNames[i];
+                        var size = ComputeSize(assetPath);
+                        var vab = new VirtualAssetBundleEntry(a, size);
+                        vab.m_AssetPath = assetPath;
+                        bundleData.Assets.Add(vab);
                         dataSize += size;
                         headerSize += a.Length * 5; //assume 5x path length overhead size per item, probably much less
                     }
@@ -218,6 +218,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                         RetryCount = schema.RetryCount,
                         Timeout = schema.Timeout,
                         BundleName = Path.GetFileName(bundleLocData.InternalId),
+                        AssetLoadMode = schema.AssetLoadMode,
                         BundleSize = dataSize + headerSize
                     };
                     bundleLocData.Data = requestOptions;
@@ -237,7 +238,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
             }
 
             var contentCatalog = new ContentCatalogData(ResourceManagerRuntimeData.kCatalogAddress);
-            contentCatalog.SetData(aaContext.locations, aaContext.Settings.OptimizeCatalogSize);
+            contentCatalog.SetData(aaContext.locations.OrderBy(f => f.InternalId).ToList(), aaContext.Settings.OptimizeCatalogSize);
 
             contentCatalog.ResourceProviderData.AddRange(m_ResourceProviderData);
             foreach (var t in aaContext.providerTypes)
@@ -350,7 +351,7 @@ namespace UnityEditor.AddressableAssets.Build.DataBuilders
                 return Path.GetFullPath(paths[0]);
             else
                 legacyPath = String.Empty; // legacy path is never valid in 2020.1+
-#elif UNITY_2019_3_OR_NEWER
+#else
             if (IsAssetDatabaseV2Enabled()) // AssetDatabase V2 is optional in 2019.3 and 2019.4
             {
                 var hash = Experimental.AssetDatabaseExperimental.GetArtifactHash(guid);

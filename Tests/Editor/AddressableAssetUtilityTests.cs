@@ -1,11 +1,17 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using UnityEditor.AddressableAssets.Settings;
 using UnityEditor.AddressableAssets.Settings.GroupSchemas;
 using UnityEditor.Build.Utilities;
+using UnityEditor.PackageManager;
+using UnityEditor.PackageManager.Requests;
 using UnityEngine;
 using UnityEngine.Audio;
 
@@ -28,10 +34,10 @@ namespace UnityEditor.AddressableAssets.Tests
             var expectedGUID = CreateTestPrefabAsset(GetAssetPath("prefab1.prefab"), "prefab1");
             var expectedPath = AssetDatabase.GUIDToAssetPath(expectedGUID);
             var obj = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(expectedPath);
-            Assert.IsTrue(AddressableAssetUtility.GetPathAndGUIDFromTarget(obj, out var actualPath, out var actualGUID, out var actualType));
+            Assert.IsTrue(AddressableAssetUtility.IsPathValidForEntry(expectedPath), $"Asset is not a valid Addressable Entry path : {expectedPath}");
+            Assert.IsTrue(AddressableAssetUtility.TryGetPathAndGUIDFromTarget(obj, out var actualPath, out var actualGUID), "Could not get Path and Guid from Target at expectedPath " + expectedPath);
             Assert.AreEqual(expectedPath, actualPath);
             Assert.AreEqual(expectedGUID, actualGUID);
-            Assert.AreEqual(typeof(GameObject), actualType);
             AssetDatabase.DeleteAsset(expectedPath);
         }
 
@@ -39,17 +45,17 @@ namespace UnityEditor.AddressableAssets.Tests
         public void GetPathAndGUIDFromTarget_FromPrefabObject_Fails()
         {
             var obj = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            Assert.IsFalse(AddressableAssetUtility.GetPathAndGUIDFromTarget(obj, out var actualPath, out var actualGUID, out var actualType));
+            Assert.IsFalse(AddressableAssetUtility.TryGetPathAndGUIDFromTarget(obj, out var actualPath, out var actualGUID));
             Assert.IsEmpty(actualPath);
             Assert.IsEmpty(actualGUID);
             Assert.IsEmpty(actualGUID);
-            Assert.IsNull(actualType);
         }
 
         [Test]
         public void GetPackages_ReturnsUnityPackages()
         {
-            var packages = AddressableAssetUtility.GetPackages();
+            ListRequest req = Client.List(true);
+            var packages = AddressableAssetUtility.GetPackages(req);
             var addressablesPackage = packages.FirstOrDefault(p => p.name == $"com.unity.addressables");
             Assert.IsNotNull(addressablesPackage);
         }
@@ -57,17 +63,16 @@ namespace UnityEditor.AddressableAssets.Tests
         [Test]
         public void GetPathAndGUIDFromTarget_FromNullObject_Fails()
         {
-            Assert.IsFalse(AddressableAssetUtility.GetPathAndGUIDFromTarget(null, out var actualPath, out var actualGUID, out var actualType));
+            Assert.IsFalse(AddressableAssetUtility.TryGetPathAndGUIDFromTarget(null, out var actualPath, out var actualGUID));
             Assert.IsEmpty(actualPath);
             Assert.IsEmpty(actualGUID);
             Assert.IsEmpty(actualGUID);
-            Assert.IsNull(actualType);
         }
 
-        public class TestBaseClass { }
+        public class TestBaseClass {}
         [System.ComponentModel.DisplayName("TestSubClass_DisplayName")]
-        public class TestSubClass : TestBaseClass { }
-        public abstract class TestAbstractSubClass : TestBaseClass { }
+        public class TestSubClass : TestBaseClass {}
+        public abstract class TestAbstractSubClass : TestBaseClass {}
 
         [Test]
         public void GetTypesGeneric_ReturnsOnly_NonAbstractSubTypes()
@@ -148,6 +153,8 @@ namespace UnityEditor.AddressableAssets.Tests
             Assert.IsFalse(AddressableAssetUtility.IsPathValidForEntry("Assets/file.boo"));
             Assert.IsFalse(AddressableAssetUtility.IsPathValidForEntry("Assets/file.exe"));
             Assert.IsFalse(AddressableAssetUtility.IsPathValidForEntry("Assets/file.dll"));
+            Assert.IsFalse(AddressableAssetUtility.IsPathValidForEntry("Assets/file.preset"));
+            Assert.IsFalse(AddressableAssetUtility.IsPathValidForEntry("Assets/file.asmdef"));
         }
 
         [Test]
@@ -175,13 +182,11 @@ namespace UnityEditor.AddressableAssets.Tests
         public void WhenPathIsPackageImportFile_IsPathValidForEntry_ReturnsFalse()
         {
             Assert.IsFalse(AddressableAssetUtility.IsPathValidForEntry("Packages/com.company.demo/package.json"));
-            Assert.IsFalse(AddressableAssetUtility.IsPathValidForEntry("Packages/com.company.demo/package.asmdef"));
         }
 
         public void WhenPathIsNotPackageImportFile_IsPathValidForEntry_ReturnsTrue()
         {
             Assert.IsTrue(AddressableAssetUtility.IsPathValidForEntry("Packages/com.company.demo/folder/package.json"));
-            Assert.IsTrue(AddressableAssetUtility.IsPathValidForEntry("Packages/com.company.demo/folder/package.asmdef"));
         }
 
         [Test]
@@ -222,58 +227,18 @@ namespace UnityEditor.AddressableAssets.Tests
             }
         }
 
-        [TestCase(1, TestName = "OneBundle")]
-        [TestCase(5, TestName = "MultipleBundles")]
-        [Test]
-        public void AddressableAssetUtility_ConvertAssetBundlesToAddressables_CanConvertBundles(int numBundles)
-        {
-            // Setup
-            var prevGroupCount = Settings.groups.Count;
-            var testAssetGUIDs = new List<string>();
-            for (int i = 0; i < numBundles; i++)
-            {
-                var testObject = new GameObject("TestObjectForBundles" + i);
-#if UNITY_2018_3_OR_NEWER
-                PrefabUtility.SaveAsPrefabAsset(testObject, ConfigFolder + "/testasset" + i + ".prefab");
-#else
-                PrefabUtility.CreatePrefab(k_TestConfigFolder + "/testasset" + i + ".prefab", testObject);
-#endif
-                testAssetGUIDs.Add(AssetDatabase.AssetPathToGUID(ConfigFolder + "/testasset" + i + ".prefab"));
-                var importer = AssetImporter.GetAtPath(AssetDatabase.GUIDToAssetPath(testAssetGUIDs[i]));
-                importer.assetBundleName = "testAssetBundleName" + i;
-                AssetDatabase.SaveAssets();
-            }
-            AddressableAssetSettingsDefaultObject.Settings = Settings;
-
-            // Test
-            AddressableAssetUtility.ConvertAssetBundlesToAddressables();
-            Assert.AreEqual(prevGroupCount + numBundles, Settings.groups.Count);
-            Assert.AreEqual(0, AssetDatabase.GetAllAssetBundleNames().Length);
-            for (int i = 0; i < numBundles; i++)
-            {
-                Assert.NotNull(Settings.FindAssetEntry(testAssetGUIDs[i]));
-            }
-
-            // Cleanup
-            for (int i = 0; i < numBundles; i++)
-            {
-                var lastGroupIndex = AddressableAssetSettingsDefaultObject.Settings.groups.Count - 1;
-                AddressableAssetSettingsDefaultObject.Settings.RemoveGroup(AddressableAssetSettingsDefaultObject.Settings.groups[lastGroupIndex]);
-            }
-        }
-
         [Test]
         public void SafeMoveResourcesToGroup_ResourcesMovedToNewFolderAndGroup()
         {
-            var folderPath = AssetDatabase.GUIDToAssetPath(AssetDatabase.CreateFolder(ConfigFolder, "Resources"));
+            var folderPath = AssetDatabase.GUIDToAssetPath(AssetDatabase.CreateFolder(TestFolder, "Resources"));
             var g1 = CreateTestPrefabAsset(folderPath + "/p1.prefab", "p1");
             var g2 = CreateTestPrefabAsset(folderPath + "/p2.prefab", "p2");
             Assert.AreEqual(0, Settings.DefaultGroup.entries.Count);
             var result = AddressableAssetUtility.SafeMoveResourcesToGroup(Settings, Settings.DefaultGroup, new List<string> { AssetDatabase.GUIDToAssetPath(g1), AssetDatabase.GUIDToAssetPath(g2) }, null, false);
             Assert.IsTrue(result);
             Assert.AreEqual(2, Settings.DefaultGroup.entries.Count);
-            var ap = $"{ConfigFolder}_Resources_moved";
-            Assert.IsTrue(AssetDatabase.IsValidFolder($"{ConfigFolder}/Resources_moved"));
+            var ap = $"{TestFolder}_Resources_moved";
+            Assert.IsTrue(AssetDatabase.IsValidFolder($"{TestFolder}/Resources_moved"));
         }
 
         [Test]
@@ -283,11 +248,11 @@ namespace UnityEditor.AddressableAssets.Tests
             Assert.IsFalse(AddressableAssetUtility.SafeMoveResourcesToGroup(Settings, Settings.DefaultGroup, null, null, false));
         }
 
-
         HashSet<string> otherInternaIds = new HashSet<string>(new string[] { "a", "ab", "abc" });
 
         [TestCase(BundledAssetGroupSchema.AssetNamingMode.FullPath, "Assets/blah/something.asset", "", "Assets/blah/something.asset")]
         [TestCase(BundledAssetGroupSchema.AssetNamingMode.Filename, "Assets/blah/something.asset", "", "something.asset")]
+        [TestCase(BundledAssetGroupSchema.AssetNamingMode.Filename, "Assets/blah/somescene.unity", "", "somescene")]
         [TestCase(BundledAssetGroupSchema.AssetNamingMode.GUID, "Assets/blah/something.asset", "guidstring", "guidstring")]
         [TestCase(BundledAssetGroupSchema.AssetNamingMode.Dynamic, "Assets/blah/something.asset", "guidstring", "g")]
         [TestCase(BundledAssetGroupSchema.AssetNamingMode.Dynamic, "Assets/blah/something.asset", "abcd_guidstring", "abcd")]
@@ -299,6 +264,118 @@ namespace UnityEditor.AddressableAssets.Tests
             bas.InternalIdNamingMode = mode;
             var actualId  = bas.GetAssetLoadPath(assetPath, otherInternaIds, s => guid);
             Assert.AreEqual(expectedId, actualId);
+        }
+
+        [Test]
+        public void InspectorGUI_GatherTargetinfo_AllAddressable()
+        {
+            string path1 = GetAssetPath("test.prefab");
+            string guid1 = AssetDatabase.AssetPathToGUID(path1);
+            Settings.CreateOrMoveEntry(guid1, Settings.DefaultGroup);
+            string path2 = GetAssetPath("test 1.prefab");
+            string guid2 = AssetDatabase.AssetPathToGUID(path2);
+            Settings.CreateOrMoveEntry(guid2, Settings.DefaultGroup);
+
+            UnityEngine.Object[] targets = new UnityEngine.Object[2];
+            targets[0] = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path1);
+            targets[1] = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path2);
+            var infos = UnityEditor.AddressableAssets.GUI.AddressableAssetInspectorGUI.GatherTargetInfos(targets, Settings);
+            
+            Assert.AreEqual(2, infos.Count);
+            Assert.NotNull(infos[0].MainAssetEntry);
+            Assert.NotNull(infos[1].MainAssetEntry);
+           
+            // clean up
+            Settings.RemoveAssetEntry(guid1);
+            Settings.RemoveAssetEntry(guid2);
+        }
+        
+        [Test]
+        public void InspectorGUI_GatherTargetinfo_MixedAddressable()
+        {
+            string path1 = GetAssetPath("test.prefab");
+            string guid1 = AssetDatabase.AssetPathToGUID(path1);
+            Settings.CreateOrMoveEntry(guid1, Settings.DefaultGroup);
+            string path2 = GetAssetPath("test 1.prefab");
+
+            UnityEngine.Object[] targets = new UnityEngine.Object[2];
+            targets[0] = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path1);
+            targets[1] = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path2);
+            var infos = UnityEditor.AddressableAssets.GUI.AddressableAssetInspectorGUI.GatherTargetInfos(targets, Settings);
+            
+            Assert.AreEqual(2, infos.Count);
+            Assert.NotNull(infos[0].MainAssetEntry);
+            Assert.IsNull(infos[1].MainAssetEntry);
+           
+            // clean up
+            Settings.RemoveAssetEntry(guid1);
+        }
+        
+        [Test]
+        public void InspectorGUI_FindUniqueAssetGuids_CorrectAssetCount()
+        {
+            string path1 = GetAssetPath("test.prefab");
+            string guid1 = AssetDatabase.AssetPathToGUID(path1);
+            Settings.CreateOrMoveEntry(guid1, Settings.DefaultGroup);
+            string path2 = GetAssetPath("test 1.prefab");
+
+            UnityEngine.Object[] targets = new UnityEngine.Object[2];
+            targets[0] = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path1);
+            targets[1] = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path2);
+            var infos = UnityEditor.AddressableAssets.GUI.AddressableAssetInspectorGUI.GatherTargetInfos(targets, Settings);
+            
+            Assert.AreEqual(2, infos.Count);
+            Assert.NotNull(infos[0].MainAssetEntry);
+            Assert.IsNull(infos[1].MainAssetEntry);
+            
+            infos.Add(infos[0]);
+            infos.Add(infos[1]);
+            UnityEditor.AddressableAssets.GUI.AddressableAssetInspectorGUI.FindUniqueAssetGuids(infos, out var uniqueAssetGuids, out var uniqueAddressableAssetGuids);
+            
+            Assert.AreEqual(2, uniqueAssetGuids.Count);
+            Assert.AreEqual(1, uniqueAddressableAssetGuids.Count);
+           
+            // clean up
+            Settings.RemoveAssetEntry(guid1);
+        }
+
+        [Test]
+        public void GivenFunction_ParallelForEachAsync_ReturnsCompletedTask()
+        {
+            //two identical lists
+            var originalNums = new List<int>() { 1, 2, 3, 4, 5 };
+            var nums = new List<int>() { 1, 2, 3, 4, 5 };
+
+            //function modifies original list by adding one 
+            AddressableAssetUtility.ParallelForEachAsync(nums, 5, (num) =>
+            {
+                originalNums[num - 1] += 1;
+                return Task.FromResult(originalNums[num - 1]);
+            }).GetAwaiter().GetResult();
+
+            //validate that the modified number matches
+            for (var i = 0; i < originalNums.Count; i++)
+            {
+                Assert.AreEqual(nums[i] + 1, originalNums[i]);
+            }
+        }
+
+        [Test]
+        public void GetMD5Hash_ReturnsValidMD5Hash()
+        {
+            const string FilePath = "test_file";
+            var file = File.Create(FilePath);
+            var content = "12345";
+            var contentBytes = Encoding.ASCII.GetBytes(content);
+            file.Write(contentBytes, 0, contentBytes.Length);
+            file.Close();
+
+            var hashString = AddressableAssetUtility.GetMd5Hash(FilePath);
+            File.Delete(FilePath);
+
+            Assert.NotNull(hashString);
+            Assert.AreEqual("827ccb0eea8a706c4c34a16891f84e7b", hashString);
+
         }
     }
 }

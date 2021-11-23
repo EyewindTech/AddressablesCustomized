@@ -119,7 +119,7 @@ namespace UnityEngine.ResourceManagement.Tests
             bool exceptionHandlerCalled = false;
             ResourceManager.ExceptionHandler += (h, ex) => exceptionHandlerCalled = true;
 
-            var op = m_RM.CreateCompletedOperationInternal<int>(1, true, "An exception occured.");
+            var op = m_RM.CreateCompletedOperationInternal<int>(1, true, new Exception("An exception occured."));
 
             var status = AsyncOperationStatus.None;
             op.Completed += (x) => status = x.Status;
@@ -131,7 +131,7 @@ namespace UnityEngine.ResourceManagement.Tests
             Assert.AreEqual(AsyncOperationStatus.Succeeded, status);
             op.Release();
         }
-        
+
         [UnityTest]
         public IEnumerator AsyncOperationHandle_TaskIsDelayedUntilAfterDelayedCompletedCallbacks()
         {
@@ -141,18 +141,18 @@ namespace UnityEngine.ResourceManagement.Tests
             op.Completed += (x) => status = x.Status;
             var t = op.Task;
             Assert.IsFalse(t.IsCompleted);
-            
+
             // callbacks are deferred to next update
             m_RM.Update(0.0f);
 
             // the Task may not yet have continues after at this point on the update,
             // give the Synchronization a little time with a yield
             yield return null;
-            
+
             Assert.IsTrue(t.IsCompleted);
             op.Release();
         }
-        
+
         [Test]
         public void AsyncOperationHandle_TaskIsCompletedWhenHandleIsCompleteWithoutDelayedCallbacks()
         {
@@ -244,7 +244,7 @@ namespace UnityEngine.ResourceManagement.Tests
             var mdpco = new List<ManualDownloadPercentCompleteOperation>();
             for (int i = 0; i < 4; i++)
             {
-                var o = m_RM.CreateOperation<ManualDownloadPercentCompleteOperation>(typeof(ManualDownloadPercentCompleteOperation), 1, 0, null);
+                var o = m_RM.CreateOperation<ManualDownloadPercentCompleteOperation>(typeof(ManualDownloadPercentCompleteOperation), 1, null, null);
                 o.Start(m_RM, default, null);
                 mdpco.Add(o);
                 ops.Add(new AsyncOperationHandle(o));
@@ -263,7 +263,7 @@ namespace UnityEngine.ResourceManagement.Tests
         [Test]
         public void ChainOperation_WithOpThatImplementGetDownloadStatus_ComputesExpectedDownloadPercentComplete()
         {
-            var depOp = m_RM.CreateOperation<ManualDownloadPercentCompleteOperation>(typeof(ManualDownloadPercentCompleteOperation), 1, 0, null);
+            var depOp = m_RM.CreateOperation<ManualDownloadPercentCompleteOperation>(typeof(ManualDownloadPercentCompleteOperation), 1, null, null);
             depOp.Start(m_RM, default, null);
             var chainOp = m_RM.CreateChainOperation<object>(new AsyncOperationHandle(depOp), s => m_RM.CreateCompletedOperationInternal<object>(null, true, null));
 
@@ -281,11 +281,11 @@ namespace UnityEngine.ResourceManagement.Tests
         public void PercentComplete_ReturnsZero_WhenChainOperationHasNotBegun()
         {
             var baseOperation = m_RM.CreateChainOperation<AsyncOperationHandle>(
-                new AsyncOperationHandle(new ManualPercentCompleteOperation(1f)), 
+                new AsyncOperationHandle(new ManualPercentCompleteOperation(1f)),
                 (obj) =>
-            {
-                return new AsyncOperationHandle<AsyncOperationHandle>();
-            });
+                {
+                    return new AsyncOperationHandle<AsyncOperationHandle>();
+                });
 
             Assert.AreEqual(0, baseOperation.PercentComplete);
         }
@@ -294,7 +294,7 @@ namespace UnityEngine.ResourceManagement.Tests
         public void GroupOperation_WithDuplicateOpThatImplementGetDownloadStatus_DoesNotOverCountValues()
         {
             var ops = new List<AsyncOperationHandle>();
-            var o = m_RM.CreateOperation<ManualDownloadPercentCompleteOperation>(typeof(ManualDownloadPercentCompleteOperation), 1, 0, null);
+            var o = m_RM.CreateOperation<ManualDownloadPercentCompleteOperation>(typeof(ManualDownloadPercentCompleteOperation), 1, null, null);
             o.Start(m_RM, default, null);
             for (int i = 0; i < 4; i++)
                 ops.Add(new AsyncOperationHandle(o));
@@ -316,7 +316,7 @@ namespace UnityEngine.ResourceManagement.Tests
             }
         }
 
-        [Test] 
+        [Test]
         public void CompletionEvents_AreInvoked_InOrderAdded()
         {
             var op = new TestOp();
@@ -327,6 +327,19 @@ namespace UnityEngine.ResourceManagement.Tests
             op.CompletedTypeless += o => { Assert.AreEqual(3, count); count++; };
             op.Start(null, default, null);
             op.Complete(1, true, null);
+        }
+
+        [Test]
+        public void WhenOperationIsReused_HasExecutedIsReset()
+        {
+            var op = new TestOp();
+            op.Start(null, default, null);
+            op.Complete(1, true, null);
+
+            Assert.IsTrue(op.HasExecuted);
+            var dep = new AsyncOperationHandle(new TestOp());
+            op.Start(null, dep, null);
+            Assert.IsFalse(op.HasExecuted);
         }
     }
 }

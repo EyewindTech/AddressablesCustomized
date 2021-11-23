@@ -319,10 +319,10 @@ namespace UnityEditor.AddressableAssets.Settings
 
                 AddProfile(k_RootProfileName, null);
                 CreateValue("BuildTarget", "[UnityEditor.EditorUserBuildSettings.activeBuildTarget]");
-                CreateValue(AddressableAssetSettings.kLocalBuildPath, "[UnityEngine.AddressableAssets.Addressables.BuildPath]/[BuildTarget]");
-                CreateValue(AddressableAssetSettings.kLocalLoadPath, "{UnityEngine.AddressableAssets.Addressables.RuntimePath}/[BuildTarget]");
-                CreateValue(AddressableAssetSettings.kRemoteBuildPath, "ServerData/[BuildTarget]");
-                CreateValue(AddressableAssetSettings.kRemoteLoadPath, "http://localhost/[BuildTarget]");
+                CreateValue(AddressableAssetSettings.kLocalBuildPath, AddressableAssetSettings.kLocalBuildPathValue);
+                CreateValue(AddressableAssetSettings.kLocalLoadPath, AddressableAssetSettings.kLocalLoadPathValue);
+                CreateValue(AddressableAssetSettings.kRemoteBuildPath, AddressableAssetSettings.kRemoteBuildPathValue);
+                CreateValue(AddressableAssetSettings.kRemoteLoadPath, AddressableAssetSettings.RemoteLoadPathValue);
             }
             return GetDefaultProfileId();
         }
@@ -587,7 +587,7 @@ namespace UnityEditor.AddressableAssets.Settings
             return m_Profiles.Find(p => p.id == profileId);
         }
 
-        string GetVariableId(string variableName)
+        internal string GetVariableId(string variableName)
         {
             foreach (var idPair in profileEntryNames)
             {
@@ -658,6 +658,7 @@ namespace UnityEditor.AddressableAssets.Settings
                     pro.values.Add(new BuildProfile.ProfileEntry(id, defaultValue));
                 }
             }
+            SetDirty(AddressableAssetSettings.ModificationEvent.ProfileModified, null, true);
             return id;
         }
 
@@ -712,6 +713,18 @@ namespace UnityEditor.AddressableAssets.Settings
                     throw new OverflowException();
             }
             return newName;
+        }
+        
+        internal void CreateDuplicateVariableWithNewName(AddressableAssetSettings addressableAssetSettings, string newVariableName, string variableNameToCopyFrom)
+        {
+            var activeProfileId = addressableAssetSettings.activeProfileId;
+            string newVarId = CreateValue(newVariableName, GetValueByName(activeProfileId, variableNameToCopyFrom));
+            string oldVarId = GetVariableId(variableNameToCopyFrom);
+            foreach (var profile in profiles)
+            {
+                profile.SetValueById(newVarId, profile.GetValueById(oldVarId));
+                SetDirty(AddressableAssetSettings.ModificationEvent.ProfileModified, profile, true);
+            }
         }
     }
 }

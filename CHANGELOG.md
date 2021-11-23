@@ -4,6 +4,168 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.19.11] - 2021-10-23
+- Fixed issue with missing reference exception when using addressables where content has not been built.
+- Added warning that LZMA compression is not available for WebGL AssetBundles.
+- Fixed issue were getting a Group Template fails where the project name or parent directory ended in "Assets".
+- Fixed issue where option to build Addressables when building a Player where displayed for unsupported editor versions.
+- Fixed issue where hosting services filters ip addresses when entering playmode and no services are in use
+- Fixed "Editor Hosted" LoadPath, to work with active local Editor hosting service
+- Fixed error where creating new groups would lead to errors if the default build and load path variables were not present in one's profile settings.
+- Modified the behavior of AssetReference.editorAsset and AssetReference.SetEditorAsset to be more consistent and intuitive
+- Fixed issue where upgrading from versions that didn't have ProfileGroupTypes was causing issues during builds.
+
+## [1.19.9] - 2021-09-30
+- Fixing a compile error on platforms where the Caching API is stripped.
+- Updating ScriptableBuildPipeline dependency
+
+## [1.19.6] - 2021-09-24
+- Fixed issue where built-in shaders and MonoScript Bundles prefix option was not prefixed to Bundle filename.
+- Restructured and updated documentation.
+- Fixed an issue where graphs in the event viewer would sometimes scroll off the window
+- Fixed issue where an AssetReference field cannot be interacted with the tab and enter keys.
+- Fixed issue where an AssetReference label is displayed wrong where the AssetReferece is a child of the property being displayed.
+- Added documentation for Addressables.CleanBundleCache
+- Fixed issue where editing an open Prefab and saving the Prefab will deselect selected Objects.
+- Improved performance of displaying Addressables Inspector in a very large Project.
+- Fixed issue where buildlayout.txt would contain incorrect bundle names if a group's bundle naming scheme was set to filename
+- Fixed an issue where some platforms were caching catalogs that don't support caching
+- Fixed an issue where the popup windows for creating new profiles path variables would appear in seemingly random places. 
+- Fixed an issue where the popup window for creating a Build and Load path variable pair would not properly display its save button
+- Added note in Hosting Services docs about modifying firewall settings when testing on other devices.
+- Added handling of possible exceptions when caching catalog files.
+
+## [1.19.4] - 2021-08-24
+- Removing support for 2018.4
+- Added options for building Addressables content as a prebuild step when building Player.
+- Optimised StreamingAssets usage to no longer need to be copied into the project (2021.2+).
+- Fixed issue where OnDestroy use of Addressables API results in errors when Enter Play Mode Settings are enabled.
+- Set AssetEntryCollection is Obsolete, includes auto update process to create Group entries from EntryCollections.
+- Updated CheckForCatalogUpdates to properly report any failures that occur while its running.
+- Combined BundledAssetGrupSchema CRC settings to a single value.
+- BundledAssetGroupSchema Request Timeout will now use time in seconds since last time data wasa downloaded.
+- Fixed issue where Exceptions in UnityWebRequest.Send were not caught.
+- Updated the way that CompletedOperation events are handled in the Event Viewer to make it easier to associate a given CompletedOperation with its corresponding ChainOperation
+- References to Time.deltaTime throughout Addressables are now replaced with Time.unscaledDeltaTime to better match whats described in the API
+- Improved the performance of the ProcessAllGroups build step.
+- Fixed a bug where having unmatched brackets in a profile's value could lead to a freeze.
+- Fixed a bug where certain patterns of values in a profile variable would occasionally lead to an InvalidOperationException while building
+- Added check to prevent infinite loop during WaitForCompletion during Asset Database Mode and Simulate Groups Mode
+- Users can now supply a callback to receive the UnityWebRequest before being sent by web-based providers
+- Added new API to clear the bundle cache for nonreferenced remote asset bundles. UpdateCatalogs has a new optional parameter called autoCleanBundleCache that when enabled will clear the bundle cache for nonreferenced remote asset bundles.
+- New public APIs
+	- BundledAssetGroupSchema.AssetLoadMode
+	- AssetBundleProvider.AssetBundleRequestOptions.AssetLoadMode
+	- Addressables.WebRequestOverride
+	- ResourceManager.WebRequestOverride
+	- AddressableAssetSettings.DisableVisibleSubAssetRepresentations
+	- Exposed Auto release parameter added to InitializeAsync
+	- BundleRuleBase
+	- GenerateLocationListsTask.ProcessInput (formally RunInteral)
+	- BuildScriptPackedMode.PrepGroupBundlePacking
+	- UnloadSceneAsync APIs with exposed UnloadSceneOptions parameter
+	- Addressables.CleanBundleCache
+	- New parameter for Addressables.UpdateCatalogs to auto clean the bundle cache
+       - ProfileGroupType introduces a new workflow of grouping profile variables in the Addressables Profiles window, otherwise known as path pairs.
+
+## [1.18.15] - 2021-07-26
+- Improved Addressables inspector for Assets.
+- Fixed issue where the hosting window would use an exceptionally high (8-20%) amount of CPU while open with a hosting service created
+- Added update on profile change, changed to remove preceding slashes and change all to forward slash for hosting service
+- Added documentation explaining why we are unable to support WaitForCompletion (sync Addressables) on WebGL 
+
+## [1.18.13] - 2021-07-13
+- Fixed issue where Addressables would not use a custom Asset Bundle Provider if the default group was empty
+- InvalidKeyExceptions are now correctly thrown as InvalidKeyExceptions, as opposed to before, where they were thrown as System.Exceptions. Please note that this may break any checks that rely on InvalidKeyExceptions being thrown as System.Exception
+- Fixed issue where UnauthorizedAccessException is logged during a build if content_state.bin is locked by version control integration.
+- Fixed issue where user defined callbacks can cause unexpected behavior for async operations that are automatically released.
+- Fixed issue where Content Update would not include folder entry sub entries.
+- Fixed issue where NullReferenceException was logged when multi-selecting with Resource in Groups TreeView.
+- Fixed issue where Check for Content Update Restrictions excludes dependencies for folder entries.
+- Fixed issue where AddPostCatalogUpdatesInternal would attempt to remove the hash from strings that did not include a hash, occassionally leading to incorrect bundle names in catalog.json
+- Load AssetBundles Asynchronously from UnityWebRequest for supported Editor versions 
+- Fixed issue where hidden files were being flagged in GetDownloadSizeAsync when "Use Asset Database (fastest)" is enabled.
+- Added logic for auto releasing completion handle in InitializeAsync
+- Fixed issue where AssetBundleProvider would fail to retry on download dailed
+- Fixed bug where Fast Mode wasn't returning the correct resource locations or their types, especially for sub-objects.
+- Fixed bug where Hosting Service was not saving if enabled between domain reloads
+- Fixed bug where Scenes with Group setting Asset Internal Naming Mode of Filename failed to load
+- Fixed bug where Hosting window would occassionally be empty on startup.
+
+## [1.18.11] - 2021-06-15
+- Improved performance of Labels popup in Groups Window.
+- Added "Copy Address to Clipboard" Context menu option in Groups Window.
+- Added AssetLoadMode option to AddressableAssetsGroup, adds "Requested Asset And Dependencies" and "All Packed - Assets And Dependencies" load methods.
+- (2021.2+) Improved performance of copying local buld path Groups built content when building a Player.
+- Removed "Export Addressables" button from groups window because it was no longer in use.
+- Fixed issue where loading remote catalog from .json fails when Compress Local Catalog is enabled.
+- Fixed issue where loading remote catalog from bundle on WebGL fails when Compress Local Catalog is enabled.
+- Added multi-project workflow documentation
+- Made CacheInitializationData.ExpirationDelay obsolete
+- Improve Hierarchical Search performance in Groups Window.
+- Build now fails earlier if invalid or unsupported files are included.
+- Fixed issue where renaming Group and Profiles would not cancel using Escape key.
+- Fixed issue where StripUnityVersionFromBundleBuild and DisableVisibleSubAssetRepresentations were not being serialised to file.
+- Updated content update docs to be a little more clear
+- Made ExpirationDelay on the CacheInitializationObjects obsolete
+- Reduced amount of main thread file I/O performed during AssetBundle loading
+
+## [1.18.9] - 2021-06-04
+- Added "Select" button for Addressable Asset in Inspector to select the Asset in the Addressables Groups Window.
+- Reduced the number of file copies required during building Addressables and moving Addressables content during Player build.
+- Fixed issue with AssetReferenceUIRestriction not working with Lists and Arrays.
+- Optimised loading AssetBundles to avoid redundent existing file checks.
+- Fixed issue with folder asset entries throwing null ref exceptions when doing a Check for Content Update Restriction
+- Added documentation about how to implement custom operations with synchronous behavior
+- Added option on AddressableAssetSettings to strip the Unity version from the AssetBundle hash during build.
+- Added documentation about useful tools you can use when building Addressables content with a CI pipeline
+- Added Import Groups tool to Samples folder.
+- Updated documentation for setting up and importing addressable assets in packages."
+- Fixed issue where multi-group drag and drop places groups in reverse order.
+- Fixed issue where an asset entry is no longer selected in the Project window after it is modified on disk.
+- Fixed simulated play mode when "Internal Asset Naming Mode" was set to something other than "Full Path"
+- Fixed issues with WaitForCompletion getting stuck in infinite loop during failed operations
+- Organised AddressableAssetSettings GUI into more distint setting types.
+- Fixed issue where the wrong operation would sometimes be returned by the cache when a project contains over 10K addressable assets
+- Added path pairs feature
+- Fixed issue where AsyncOperationBase.HasExecuted isn't being reset when the operation is reused.
+- Added check to ensure that ResourceManager.Update() is never called from within its own callstack.
+- Added ability to rename labels from the label window.
+- Added the DisableVisibleSubAssetRepresentations option in Settings.
+
+## [1.18.4] - 2021-05-06
+- EditorOnly tagged GameObjects in Scenes are no longer detected as duplicates for Scene Analyze results.
+- Fixed issue when dragging multiple groups around within the groups window to set their display order.
+- Reimplemented AsyncOperationBase.Task API to use TaskComppletionSource instead of creating a background thread.
+- Fixed issue where remote .hash file was still being requested when Disable Content Catalog Update on Startup was enabled
+- Fixed issue where AssetReference variable names weren't consistently formatted in the inspector
+- Fixed bug where Completed callback was not called the same frame for some async operations when WaitForCompletion is used.
+- Added Samples to the package.  These can be added to the project through the Addressables page in Package Manager
+
+## [1.18.2] - 2021-04-20
+- Where available use synchronous load api's when AsyncOperationHandle.WaitForCompletion is called.
+- Fixed issue where loading of Prefabs and ScriptableObjects in "Use Asset Database" and "Simulate Groups" play mode could cause changes to source Assets. Now those play modes will return instanced copies of the Assets.
+- Added "Catalog Download Timeout" to AddressableAssetSettings, used for setting a timeout for .hash and .json catalog file downloads.
+- Fixed issue where order of data in catalog.json can change. Order is now sorted to be deterministic.
+- Added best practice documentation for define dependant compilation during build time.
+- CompletedOperation are now returned to the op pool so they can be reused
+- Made AddressableAssetSettings.ContentStateBuildPath public api access.
+- Add option for building MonoScript bundle. This approach improves multi bundle dependencies to the same MonoScript.
+- Added documentation for AddressableAssetSettings options.
+- Improved error handling of failed unity web requests and some other operations. 
+- Users can now look into the InnerException property of an operation's exception for additional details"
+- Fixed issue where .json and .asmdef files in the root of a package folder cannot be marked as Addressable.
+- Fixed issue where unmodifiable assets cannot be marked as Addressable.
+- Exposed more tools for making custom build scripts
+- Exposed InvokeWaitForCompletion to be inheritable by custom operations
+- Fixed issue where an url was improperly parsed by LoadContentCatalogAsync() if it contained query parameters
+- Fixed issue where the post assigned to a hosting service was changing on domain reloads
+- Add option for building asset bundles using "Non-Recursive Dependency calculation" methods. This approach helps reduce asset bundle rebuilds and runtime memory consumption.
+- Add upload speed option to the http service settings. Downloads will be provided by the rate set in Kbp/s
+- Add an option to force using UnityWebRequest even when AssetBundles are local
+- Fixed issue with WebRequestQueue where web requests weren't getting queued correctly
+- Fixed issue where looking for default group would spam null reference to GUI if Built In data group was deleted/null
+
 ## [1.17.17] - 2021-04-06
 - Add AssetPostprocessor for AddressableSettings after AssetDatabase is Initialised, if not yet initialised on initial project launch.
 - Removed serialisation of m_MainAsset and m_TargetAsset from Group entries.
@@ -109,6 +271,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Added options for internal naming of asset bundles.  This will allow for deterministic naming to avoid unintended diffs for content updates.
 - The "Ignore Invalid/Unsupported Files" option is now saved in the settings
 - Fixed issue where Filename only bundle naming schemas were overwriting old bundles prematurely in content update.
+
+## [1.16.19] - 2021-04-08
+- Fixed an issue where the group property of the AddressableAssetGroupSchema was not persisted, and could get lost when objects were reloaded
+
+## [1.16.18] - 2021-03-23
+- Fixed compile warning in Unity 2020.2+
 
 ## [1.16.17] - 2021-02-25
 - Updated group rename logic to support engine AssetDatabase fix. Change should be transparent to users.

@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using UnityEngine.AddressableAssets.ResourceLocators;
+using UnityEngine.Networking;
 using UnityEngine.ResourceManagement;
 using UnityEngine.ResourceManagement.AsyncOperations;
 using UnityEngine.ResourceManagement.ResourceLocations;
 using UnityEngine.ResourceManagement.ResourceProviders;
+using UnityEngine.ResourceManagement.Util;
 
 namespace UnityEngine.AddressableAssets.ResourceProviders
 {
@@ -75,15 +77,20 @@ namespace UnityEngine.AddressableAssets.ResourceProviders
             //   int m_StartFrame;
             string m_LocalDataPath;
             string m_RemoteHashValue;
-            string m_LocalHashValue;
+            internal string m_LocalHashValue;
             ProvideHandle m_ProviderInterface;
             internal ContentCatalogData m_ContentCatalogData;
             AsyncOperationHandle<ContentCatalogData> m_ContentCatalogDataLoadOp;
             private BundledCatalog m_BundledCatalog;
+            private bool m_Retried;
+            private bool m_DisableCatalogUpdateOnStart;
+            private bool m_IsLocalCatalogInBundle;
 
             public void Start(ProvideHandle providerInterface, bool disableCatalogUpdateOnStart, bool isLocalCatalogInBundle)
             {
                 m_ProviderInterface = providerInterface;
+                m_DisableCatalogUpdateOnStart = disableCatalogUpdateOnStart;
+                m_IsLocalCatalogInBundle = isLocalCatalogInBundle;
                 m_ProviderInterface.SetWaitForCompletionCallback(WaitForCompletionCallback);
                 m_LocalDataPath = null;
                 m_RemoteHashValue = null;
@@ -94,9 +101,9 @@ namespace UnityEngine.AddressableAssets.ResourceProviders
 
                 Addressables.LogFormat("Addressables - Using content catalog from {0}.", idToLoad);
 
-                bool isLocalCatalog = idToLoad.Equals(GetTransformedInternalId(m_ProviderInterface.Location));
+                bool loadCatalogFromLocalBundle = isLocalCatalogInBundle && CanLoadCatalogFromBundle(idToLoad, m_ProviderInterface.Location);
 
-                LoadCatalog(idToLoad, isLocalCatalogInBundle, isLocalCatalog);
+                LoadCatalog(idToLoad, loadCatalogFromLocalBundle);
             }
 
             bool WaitForCompletionCallback()
@@ -117,7 +124,7 @@ namespace UnityEngine.AddressableAssets.ResourceProviders
 
                 //content catalog op needs the Update to be pumped so we can invoke completion callbacks
                 if (ccComplete && m_ContentCatalogData == null)
-                    m_ProviderInterface.ResourceManager.Update(Time.deltaTime);
+                    m_ProviderInterface.ResourceManager.Update(Time.unscaledDeltaTime);
 
                 return ccComplete;
             }
@@ -130,13 +137,24 @@ namespace UnityEngine.AddressableAssets.ResourceProviders
                 m_ContentCatalogData?.CleanData();
             }
 
-            internal void LoadCatalog(string idToLoad,bool isLocalCatalogInBundle, bool isLocalCatalog)
+            internal bool CanLoadCatalogFromBundle(string idToLoad, IResourceLocation location)
+            {
+                return Path.GetExtension(idToLoad) == ".bundle" &&
+                    idToLoad.Equals(GetTransformedInternalId(location));
+            }
+
+            internal void LoadCatalog(string idToLoad, bool loadCatalogFromLocalBundle)
             {
                 try
                 {
-                    if (isLocalCatalogInBundle && isLocalCatalog)
+                    ProviderLoadRequestOptions providerLoadRequestOptions = null;
+                    if (m_ProviderInterface.Location.Data is ProviderLoadRequestOptions providerData)
+                        providerLoadRequestOptions = providerData.Copy();
+
+                    if (loadCatalogFromLocalBundle)
                     {
-                        m_BundledCatalog = new BundledCatalog(idToLoad);
+                        int webRequestTimeout = providerLoadRequestOptions?.WebRequestTimeout ?? 0;
+                        m_BundledCatalog = new BundledCatalog(idToLoad, webRequestTimeout);
                         m_BundledCatalog.OnLoaded += ccd =>
                         {
                             m_ContentCatalogData = ccd;
@@ -146,8 +164,10 @@ namespace UnityEngine.AddressableAssets.ResourceProviders
                     }
                     else
                     {
-                        IResourceLocation location = new ResourceLocationBase(idToLoad, idToLoad,
+                        ResourceLocationBase location = new ResourceLocationBase(idToLoad, idToLoad,
                             typeof(JsonAssetProvider).FullName, typeof(ContentCatalogData));
+                        location.Data = providerLoadRequestOptions;
+
                         m_ContentCatalogDataLoadOp = m_ProviderInterface.ResourceManager.ProvideResource<ContentCatalogData>(location);
                         m_ContentCatalogDataLoadOp.Completed += CatalogLoadOpCompleteCallback;
                     }
@@ -173,13 +193,16 @@ namespace UnityEngine.AddressableAssets.ResourceProviders
                 internal AssetBundle m_CatalogAssetBundle;
                 private AssetBundleRequest m_LoadTextAssetRequest;
                 private ContentCatalogData m_CatalogData;
+                private WebRequestQueueOperation m_WebRequestQueueOperation;
+                private AsyncOperation m_RequestOperation;
+                private int m_WebRequestTimeout;
 
                 public event Action<ContentCatalogData> OnLoaded;
 
                 public bool OpInProgress => m_OpInProgress;
                 public bool OpIsSuccess => !m_OpInProgress && m_CatalogData != null;
 
-                public BundledCatalog(string bundlePath)
+                public BundledCatalog(string bundlePath, int webRequestTimeout = 0)
                 {
                     if (string.IsNullOrEmpty(bundlePath))
                     {
@@ -191,6 +214,7 @@ namespace UnityEngine.AddressableAssets.ResourceProviders
                     }
 
                     m_BundlePath = bundlePath;
+                    m_WebRequestTimeout = webRequestTimeout;
                 }
 
                 ~BundledCatalog()
@@ -214,24 +238,74 @@ namespace UnityEngine.AddressableAssets.ResourceProviders
                     }
 
                     m_OpInProgress = true;
-                    m_LoadBundleRequest = AssetBundle.LoadFromFileAsync(m_BundlePath);
-                    m_LoadBundleRequest.completed += loadOp =>
+
+                    if (ResourceManagerConfig.ShouldPathUseWebRequest(m_BundlePath))
                     {
-                        if (loadOp is AssetBundleCreateRequest createRequest && createRequest.assetBundle != null)
+                        var req = UnityWebRequestAssetBundle.GetAssetBundle(m_BundlePath);
+                        if (m_WebRequestTimeout > 0)
+                            req.timeout = m_WebRequestTimeout;
+
+                        m_WebRequestQueueOperation = WebRequestQueue.QueueRequest(req);
+                        if (m_WebRequestQueueOperation.IsDone)
                         {
-                            m_CatalogAssetBundle = createRequest.assetBundle;
-                            m_LoadTextAssetRequest = m_CatalogAssetBundle.LoadAllAssetsAsync<TextAsset>();
-                            if (m_LoadTextAssetRequest.isDone)
-                                LoadTextAssetRequestComplete(m_LoadTextAssetRequest);
-                            m_LoadTextAssetRequest.completed += LoadTextAssetRequestComplete;
-                        } 
+                            m_RequestOperation = m_WebRequestQueueOperation.Result;
+                            if (m_RequestOperation.isDone)
+                                WebRequestOperationCompleted(m_RequestOperation);
+                            else
+                                m_RequestOperation.completed += WebRequestOperationCompleted;
+                        }
                         else
                         {
-                            Addressables.LogError($"Unable to load dependent bundle from location : {m_BundlePath}");
-                            m_OpInProgress = false;
+                            m_WebRequestQueueOperation.OnComplete += asyncOp =>
+                            {
+                                m_RequestOperation = asyncOp;
+                                m_RequestOperation.completed += WebRequestOperationCompleted;
+                            };
                         }
-                    };
+                    }
+                    else
+                    {
+                        m_LoadBundleRequest = AssetBundle.LoadFromFileAsync(m_BundlePath);
+                        m_LoadBundleRequest.completed += loadOp =>
+                        {
+                            if (loadOp is AssetBundleCreateRequest createRequest && createRequest.assetBundle != null)
+                            {
+                                m_CatalogAssetBundle = createRequest.assetBundle;
+                                m_LoadTextAssetRequest = m_CatalogAssetBundle.LoadAllAssetsAsync<TextAsset>();
+                                if (m_LoadTextAssetRequest.isDone)
+                                    LoadTextAssetRequestComplete(m_LoadTextAssetRequest);
+                                m_LoadTextAssetRequest.completed += LoadTextAssetRequestComplete;
+                            }
+                            else
+                            {
+                                Addressables.LogError($"Unable to load dependent bundle from location : {m_BundlePath}");
+                                m_OpInProgress = false;
+                            }
+                        };
+                    }
                 }
+
+                private void WebRequestOperationCompleted(AsyncOperation op)
+                {
+                    UnityWebRequestAsyncOperation remoteReq = op as UnityWebRequestAsyncOperation;
+                    var webReq = remoteReq.webRequest;
+                    DownloadHandlerAssetBundle downloadHandler = webReq.downloadHandler as DownloadHandlerAssetBundle;
+                    if (!UnityWebRequestUtilities.RequestHasErrors(webReq, out UnityWebRequestResult uwrResult))
+                    {
+                        m_CatalogAssetBundle = downloadHandler.assetBundle;
+                        m_LoadTextAssetRequest = m_CatalogAssetBundle.LoadAllAssetsAsync<TextAsset>();
+                        if (m_LoadTextAssetRequest.isDone)
+                            LoadTextAssetRequestComplete(m_LoadTextAssetRequest);
+                        m_LoadTextAssetRequest.completed += LoadTextAssetRequestComplete;
+                    }
+                    else
+                    {
+                        Addressables.LogError($"Unable to load dependent bundle from location : {m_BundlePath}");
+                        m_OpInProgress = false;
+                    }
+                    webReq.Dispose();
+                }
+
                 void LoadTextAssetRequestComplete(AsyncOperation op)
                 {
                     if (op is AssetBundleRequest loadRequest
@@ -278,27 +352,27 @@ namespace UnityEngine.AddressableAssets.ResourceProviders
                     m_LocalHashValue = dependencyObjects[(int)DependencyHashIndex.Cache] as string;
                     Addressables.LogFormat("Addressables - ContentCatalogProvider CachedHash = {0}, RemoteHash = {1}.", m_LocalHashValue, remoteHash);
 
-                    if (string.IsNullOrEmpty(remoteHash)) //offline
+                    if (string.IsNullOrEmpty(remoteHash) || disableCatalogUpdateOnStart) //offline
                     {
-                        if (!string.IsNullOrEmpty(m_LocalHashValue)) //cache exists
+                        if (!string.IsNullOrEmpty(m_LocalHashValue) && !m_Retried) //cache exists and not forcing a retry state
+                        {
                             idToLoad = GetTransformedInternalId(location.Dependencies[(int)DependencyHashIndex.Cache]).Replace(".hash", ".json");
+                        }
+                        else
+                        {
+                            m_LocalHashValue = Hash128.Compute(idToLoad).ToString();
+                        }
                     }
                     else //online
                     {
-                        if (remoteHash == m_LocalHashValue) //cache of remote is good
+                        if (remoteHash == m_LocalHashValue && !m_Retried) //cache of remote is good and not forcing a retry state
                         {
                             idToLoad = GetTransformedInternalId(location.Dependencies[(int)DependencyHashIndex.Cache]).Replace(".hash", ".json");
                         }
                         else //remote is different than cache, or no cache
                         {
-                            if (disableCatalogUpdateOnStart)
-                                m_LocalHashValue = Hash128.Compute(idToLoad).ToString();
-                            else
-                            {
-                                idToLoad = GetTransformedInternalId(location.Dependencies[(int)DependencyHashIndex.Remote]).Replace(".hash", ".json");
-                                m_LocalDataPath = GetTransformedInternalId(location.Dependencies[(int)DependencyHashIndex.Cache]).Replace(".hash", ".json");
-                            }
-
+                            idToLoad = GetTransformedInternalId(location.Dependencies[(int)DependencyHashIndex.Remote]).Replace(".hash", ".json");
+                            m_LocalDataPath = GetTransformedInternalId(location.Dependencies[(int)DependencyHashIndex.Cache]).Replace(".hash", ".json");
                             m_RemoteHashValue = remoteHash;
                         }
                     }
@@ -315,17 +389,63 @@ namespace UnityEngine.AddressableAssets.ResourceProviders
                     ccd.localHash = m_LocalHashValue;
                     if (!string.IsNullOrEmpty(m_RemoteHashValue) && !string.IsNullOrEmpty(m_LocalDataPath))
                     {
+#if ENABLE_CACHING
                         var dir = Path.GetDirectoryName(m_LocalDataPath);
                         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                             Directory.CreateDirectory(dir);
                         var localCachePath = m_LocalDataPath;
                         Addressables.LogFormat("Addressables - Saving cached content catalog to {0}.", localCachePath);
-                        File.WriteAllText(localCachePath, JsonUtility.ToJson(ccd));
-                        File.WriteAllText(localCachePath.Replace(".json", ".hash"), m_RemoteHashValue);
+                        try
+                        {
+                            File.WriteAllText(localCachePath, JsonUtility.ToJson(ccd));
+                            File.WriteAllText(localCachePath.Replace(".json", ".hash"), m_RemoteHashValue);
+                        }
+                        catch (Exception e)
+                        {
+                            string remoteInternalId = GetTransformedInternalId(m_ProviderInterface.Location.Dependencies[(int)DependencyHashIndex.Remote]);
+                            var errorMessage = $"Unable to load ContentCatalogData from location {remoteInternalId}. Failed to cache catalog to location {localCachePath}.";
+                            ccd = null;
+                            m_ProviderInterface.Complete(ccd, false, new Exception(errorMessage, e));
+                            return;
+                        }
+#endif
                         ccd.localHash = m_RemoteHashValue;
                     }
+                    m_ProviderInterface.Complete(ccd, true, null);
                 }
-                m_ProviderInterface.Complete(ccd, ccd != null, ccd == null ? new Exception($"Unable to load ContentCatalogData  from location {m_ProviderInterface.Location}.") : null);
+                else
+                {
+                    var errorMessage = $"Unable to load ContentCatalogData from location {m_ProviderInterface.Location}";
+                    if (!m_Retried)
+                    {
+                        m_Retried = true;
+
+                        //if the prev load path is cache, try to remove cache and reload from remote
+                        var cachePath = GetTransformedInternalId(m_ProviderInterface.Location.Dependencies[(int)DependencyHashIndex.Cache]);
+                        if (m_ContentCatalogDataLoadOp.LocationName == cachePath.Replace(".hash", ".json"))
+                        {
+                            try
+                            {
+#if ENABLE_CACHING
+                                File.Delete(cachePath);
+#endif
+                            }
+                            catch (Exception)
+                            {
+                                errorMessage += $". Unable to delete cache data from location {cachePath}";
+                                m_ProviderInterface.Complete(ccd, false, new Exception(errorMessage));
+                                return;
+                            }
+                        }
+
+                        Addressables.LogWarning(errorMessage + ". Attempting to retry...");
+                        Start(m_ProviderInterface, m_DisableCatalogUpdateOnStart, m_IsLocalCatalogInBundle);
+                    }
+                    else
+                    {
+                        m_ProviderInterface.Complete(ccd, false, new Exception(errorMessage + " on second attempt."));
+                    }
+                }
             }
         }
 

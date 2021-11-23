@@ -54,11 +54,8 @@ namespace UnityEngine.ResourceManagement.Tests
                 if (!Directory.Exists(Path.GetDirectoryName(assetPath)))
                     Directory.CreateDirectory(Path.GetDirectoryName(assetPath));
 
-#if UNITY_2018_3_OR_NEWER
                 PrefabUtility.SaveAsPrefabAsset(go, assetPath);
-#else
-                PrefabUtility.CreatePrefab(assetPath, go);
-#endif
+     
                 Object.DestroyImmediate(go, false);
             }
 
@@ -167,14 +164,11 @@ namespace UnityEngine.ResourceManagement.Tests
 
                 await operation.Task;
                 result = operation.Result;
-                await operation.Task;
-                await operation.Task;
                 done = true;
             }
         }
 
-        [UnityTest, Timeout(10000)]
-        [Ignore("Test is unstable on Katana.  Needs investigation and either fixed or removed.  https://jira.unity3d.com/browse/ADDR-1867")]
+        [UnityTest]
         public IEnumerator WhenAsyncOperationIsDone_TaskIsCompleted()
         {
             // Setup
@@ -195,8 +189,7 @@ namespace UnityEngine.ResourceManagement.Tests
             GameObject.Destroy(go);
         }
         
-        [UnityTest, Timeout(10000)]
-        [Ignore("Test is unstable on Katana.  Needs investigation and either fixed or removed.  https://jira.unity3d.com/browse/ADDR-1867")]
+        [UnityTest]
         public IEnumerator WhenAsyncOperationIsDone_TasksAndCallbackIsCompleted()
         {
             // Setup

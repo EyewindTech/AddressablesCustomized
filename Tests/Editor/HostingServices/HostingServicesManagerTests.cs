@@ -1,11 +1,14 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Reflection;
 using System.Runtime.Serialization;
 using System.Threading;
 using NUnit.Framework;
+using UnityEditor.AddressableAssets.Build.DataBuilders;
 using UnityEditor.AddressableAssets.HostingServices;
 using UnityEditor.AddressableAssets.Settings;
 using UnityEditor.AddressableAssets.Settings.GroupSchemas;
@@ -38,7 +41,6 @@ namespace UnityEditor.AddressableAssets.Tests.HostingServices
             var services = m_Manager.HostingServices.ToArray();
             foreach (var svc in services)
             {
-                svc.StopHostingService();
                 m_Manager.RemoveHostingService(svc);
             }
             if (Directory.Exists(k_TestConfigFolder))
@@ -354,12 +356,96 @@ namespace UnityEditor.AddressableAssets.Tests.HostingServices
         }
 
         [Test]
-        public void OnEnableShould_RefreshGlobalProfileVariables()
+        public void OnEnableShould_RefreshGlobalProfileVariables_IfNotExitingEditMode()
         {
             m_Manager.Initialize(m_Settings);
             m_Manager.GlobalProfileVariables.Clear();
+            bool exitingExitMode = m_Manager.exitingEditMode;
+            m_Manager.exitingEditMode = false;
+
             m_Manager.OnEnable();
             Assert.GreaterOrEqual(m_Manager.GlobalProfileVariables.Count, 1);
+
+            m_Manager.exitingEditMode = exitingExitMode;
+        }
+
+        [Test]
+        public void OnEnableShould_RefreshGlobalProfileVariables_IfExitingEditMode_AndServiceEnabled_AndUsingPackedPlayMode()
+        {
+            m_Manager.Initialize(m_Settings);
+            m_Manager.GlobalProfileVariables.Clear();
+            bool exitingExitMode = m_Manager.exitingEditMode;
+            m_Manager.exitingEditMode = true;
+
+            var svc = m_Manager.AddHostingService(typeof(TestHostingService), "test");
+            svc.StartHostingService();
+
+            int activePlayerDataBuilderIndex = m_Settings.ActivePlayerDataBuilderIndex;
+            m_Settings.DataBuilders.Add(ScriptableObject.CreateInstance<BuildScriptPackedPlayMode>());
+            m_Settings.ActivePlayerDataBuilderIndex = m_Settings.DataBuilders.Count - 1;
+
+            m_Manager.OnEnable();
+            Assert.GreaterOrEqual(m_Manager.GlobalProfileVariables.Count, 1);
+            svc.StopHostingService();
+            
+            m_Settings.ActivePlayerDataBuilderIndex = activePlayerDataBuilderIndex;
+            m_Settings.DataBuilders.RemoveAt(m_Settings.DataBuilders.Count - 1);
+            m_Manager.exitingEditMode = exitingExitMode;
+        }
+
+        public class RefreshProfileVariablesNegativeTestFactory
+        {
+            public static IEnumerable RefreshProfileVariablesNegativeTestCases
+            {
+                get
+                {
+                    bool[,] testCases =
+                    {
+                        { true, false },
+                        { false, true },
+                        { false, false }
+                    };
+                    for (int i = 0; i < testCases.GetLength(0); i++)
+                    {
+                        string serviceStatusText = testCases[i, 0] ? "ServiceEnabled" : "ServiceDisabled";
+                        string playModeTypeText = testCases[i, 1] ? "UsingPackedPlayMode" : "NotUsingPackedPlayMode";
+                        string name = $"OnEnableShouldNot_RefreshGlobalProfileVariables_IfExitingEditMode_And{serviceStatusText}_And{playModeTypeText}";
+                        yield return new TestCaseData(testCases[i, 0], testCases[i, 1]).SetName(name);
+                    }
+                }
+            }
+        }
+
+        [Test]
+        [TestCaseSource(typeof(RefreshProfileVariablesNegativeTestFactory), "RefreshProfileVariablesNegativeTestCases")]
+        public void OnEnableShouldNot_RefreshGlobalProfileVariables_IfExitingEditMode_AndConditionsAreMet(bool serviceEnabled, bool usingPackedPlayMode)
+        {
+            m_Manager.Initialize(m_Settings);
+            m_Manager.GlobalProfileVariables.Clear();
+            bool exitingExitMode = m_Manager.exitingEditMode;
+            m_Manager.exitingEditMode = true;
+
+            var svc = m_Manager.AddHostingService(typeof(TestHostingService), "test");
+            if (serviceEnabled)
+                svc.StartHostingService();
+
+            int activePlayerDataBuilderIndex = m_Settings.ActivePlayerDataBuilderIndex;
+            if (usingPackedPlayMode)
+            {
+                m_Settings.DataBuilders.Add(ScriptableObject.CreateInstance<BuildScriptPackedPlayMode>());
+                m_Settings.ActivePlayerDataBuilderIndex = m_Settings.DataBuilders.Count - 1;
+            }
+
+            m_Manager.OnEnable();
+            Assert.AreEqual(0, m_Manager.GlobalProfileVariables.Count);
+
+            if (serviceEnabled)
+                svc.StopHostingService();
+
+            m_Settings.ActivePlayerDataBuilderIndex = activePlayerDataBuilderIndex;
+            if (usingPackedPlayMode)
+                m_Settings.DataBuilders.RemoveAt(m_Settings.DataBuilders.Count - 1);
+            m_Manager.exitingEditMode = exitingExitMode;
         }
 
         // OnDisable
@@ -413,41 +499,55 @@ namespace UnityEditor.AddressableAssets.Tests.HostingServices
             Assert.IsFalse(ProfileStringEvalDelegateIsRegistered(m_Settings, svc));
         }
 
-        // OnAfterDeserialize
-
+        [Ignore("Katana instability https://jira.unity3d.com/browse/ADDR-2327")]
         [Test]
-        public void OnAfterDeserializeShould_RestoreHostingServicesInstancesIfStillAlive()
+        public void OnDisableShould_StopAllServices()
         {
             m_Manager.Initialize(m_Settings);
-            var svc = m_Manager.AddHostingService(typeof(TestHostingService), "test");
-            Assert.IsTrue(m_Manager.HostingServices.Contains(svc));
+            for (int i = 0; i < 3; i++)
+            {
+                var svc = m_Manager.AddHostingService(typeof(HttpHostingService), $"test_{i}") as HttpHostingService;
+                Assert.IsNotNull(svc);
+                svc.StartHostingService();
+                Assert.IsTrue(svc.IsHostingServiceRunning);
+            }
+            m_Manager.OnDisable();
 
-            var generator = new ObjectIDGenerator();
-            var id = generator.GetId(svc, out bool firstTime);
-            Assert.IsTrue(firstTime);
+            foreach (var svc in m_Manager.HostingServices)
+                Assert.IsFalse(svc.IsHostingServiceRunning);
+        }
 
-            m_Manager.OnBeforeSerialize();
-            var serializedData = Serialize(m_Manager);
+        [Test]
+        public void OnEnableShould_RestoreServicesThatWherePreviouslyEnabled()
+        {
+            m_Manager.Initialize(m_Settings);
+            var svc = m_Manager.AddHostingService(typeof(HttpHostingService), "test") as HttpHostingService;
+            Assert.IsNotNull(svc);
+            svc.WasEnabled = true;
+            Assert.IsFalse(svc.IsHostingServiceRunning);
+            m_Manager.OnEnable();
+            Assert.IsTrue(svc.IsHostingServiceRunning);
+        }
 
-            svc = null;
-            m_Manager = null;
-            m_Settings.HostingServicesManager = null;
+        [Test]
+        public void OnDomainReload_HttpServicePortShouldntChange()
+        {
+            m_Manager.Initialize(m_Settings);
+            var svc = m_Manager.AddHostingService(typeof(HttpHostingService), "test") as HttpHostingService;
+            Assert.IsNotNull(svc);
+            svc.WasEnabled = true;
+            m_Manager.OnEnable();
+            var expectedPort = svc.HostingServicePort;
+            Assert.IsTrue(svc.IsHostingServiceRunning);
 
-            var newManager = new HostingServicesManager();
-            m_Settings.HostingServicesManager = newManager;
-            newManager.Initialize(m_Settings);
-
-            Deserialize(newManager, serializedData);
-            newManager.OnAfterDeserialize();
-
-            Assert.IsNotEmpty(newManager.HostingServices);
-            svc = newManager.HostingServices.FirstOrDefault();
-            Assert.NotNull(svc);
-            var id2 = generator.GetId(svc, out firstTime);
-            Assert.IsFalse(firstTime);
-            Assert.AreEqual(id, id2);
-
-            m_Manager = newManager;
+            for (int i = 1; i <= 5; i++)
+            {
+                m_Manager.OnDisable();
+                Assert.IsFalse(svc.IsHostingServiceRunning, $"Service '{svc.DescriptiveName}' was still running after manager.OnDisable() (iteration {i}");
+                m_Manager.OnEnable();
+                Assert.IsTrue(svc.IsHostingServiceRunning, $"Service '{svc.DescriptiveName}' not running after manager.OnEnable() (iteration {i}");
+            }
+            Assert.AreEqual(expectedPort, svc.HostingServicePort);
         }
 
         // RegisterLogger
@@ -488,6 +588,7 @@ namespace UnityEditor.AddressableAssets.Tests.HostingServices
         [Test]
         public void RefreshGlobalProfileVariablesShould_AddOrUpdatePrivateIpAddressVar()
         {
+            m_Manager.Initialize(m_Settings);
             m_Manager.GlobalProfileVariables.Clear();
             Assert.IsEmpty(m_Manager.GlobalProfileVariables);
             m_Manager.RefreshGlobalProfileVariables();
@@ -497,6 +598,7 @@ namespace UnityEditor.AddressableAssets.Tests.HostingServices
         [Test]
         public void RefreshGlobalProfileVariablesShould_RemoveUnknownVars()
         {
+            m_Manager.Initialize(m_Settings);
             m_Manager.GlobalProfileVariables.Add("test", "test");
             Assert.IsTrue(m_Manager.GlobalProfileVariables.ContainsKey("test"));
             m_Manager.RefreshGlobalProfileVariables();

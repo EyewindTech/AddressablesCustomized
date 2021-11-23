@@ -2,9 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Net.Mail;
 using UnityEditor;
-using UnityEngine.ResourceManagement.AsyncOperations;
 using UnityEngine.ResourceManagement.ResourceLocations;
 using UnityEngine.ResourceManagement.Util;
 
@@ -17,6 +15,38 @@ namespace UnityEngine.ResourceManagement.ResourceProviders
     public class AssetDatabaseProvider : ResourceProviderBase
     {
         float m_LoadDelay = .1f;
+
+        private static Object[] LoadAllAssetRepresentationsAtPath(string assetPath)
+        {
+            return AssetDatabase.LoadAllAssetRepresentationsAtPath(assetPath);
+        }
+
+        internal static Object LoadAssetSubObject(string assetPath, string subObjectName, Type type)
+        {
+            var objs = AssetDatabase.LoadAllAssetRepresentationsAtPath(assetPath);
+            foreach (var o in objs)
+            {
+                if (o.name == subObjectName)
+                {
+                    if (type.IsAssignableFrom(o.GetType()))
+                        return o;
+                }
+            }
+            return null;
+        }
+
+        private static Object LoadMainAssetAtPath(string assetPath)
+        {
+            return AssetDatabase.LoadMainAssetAtPath(assetPath);
+        }
+
+        internal static object LoadAssetAtPath(string assetPath, ProvideHandle provideHandle)
+        {
+            Object obj = AssetDatabase.LoadAssetAtPath(assetPath, provideHandle.Location.ResourceType);
+            Type objType = obj.GetType();
+            obj = obj != null && provideHandle.Type.IsAssignableFrom(objType) ? obj : null;
+            return obj;
+        }
 
         /// <summary>
         /// Default constructor.
@@ -34,9 +64,9 @@ namespace UnityEngine.ResourceManagement.ResourceProviders
 
         internal static Object[] LoadAssetsWithSubAssets(string assetPath)
         {
-            var subObjects = AssetDatabase.LoadAllAssetRepresentationsAtPath(assetPath);
+            var subObjects = LoadAllAssetRepresentationsAtPath(assetPath);
             var allObjects = new Object[subObjects.Length + 1];
-            allObjects[0] = AssetDatabase.LoadMainAssetAtPath(assetPath);
+            allObjects[0] = LoadMainAssetAtPath(assetPath);
             for (int i = 0; i < subObjects.Length; i++)
                 allObjects[i + 1] = subObjects[i];
             return allObjects;
@@ -71,35 +101,15 @@ namespace UnityEngine.ResourceManagement.ResourceProviders
                 string assetPath = m_ProvideHandle.ResourceManager.TransformInternalId(m_ProvideHandle.Location);
                 object result = null;
                 if (m_ProvideHandle.Type.IsArray)
-                {
                     result = ResourceManagerConfig.CreateArrayResult(m_ProvideHandle.Type, LoadAssetsWithSubAssets(assetPath));
-                }
                 else if (m_ProvideHandle.Type.IsGenericType && typeof(IList<>) == m_ProvideHandle.Type.GetGenericTypeDefinition())
-                {
                     result = ResourceManagerConfig.CreateListResult(m_ProvideHandle.Type, LoadAssetsWithSubAssets(assetPath));
-                }
                 else
                 {
                     if (ResourceManagerConfig.ExtractKeyAndSubKey(assetPath, out string mainPath, out string subKey))
-                    {
-                        var objs = AssetDatabase.LoadAllAssetRepresentationsAtPath(mainPath);
-                        foreach (var o in objs)
-                        {
-                            if (o.name == subKey)
-                            {
-                                if (m_ProvideHandle.Type.IsAssignableFrom(o.GetType()))
-                                {
-                                    result = o;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                        result = LoadAssetSubObject(mainPath, subKey, m_ProvideHandle.Type);
                     else
-                    {
-                        var obj = AssetDatabase.LoadAssetAtPath(assetPath, m_ProvideHandle.Location.ResourceType);
-                        result = obj != null && m_ProvideHandle.Type.IsAssignableFrom(obj.GetType()) ? obj : null;
-                    }
+                        result = LoadAssetAtPath(assetPath, m_ProvideHandle);
                 }
                 m_ProvideHandle.Complete(result, result != null, result == null ? new Exception($"Unable to load asset of type {m_ProvideHandle.Type} from location {m_ProvideHandle.Location}.") : null);
             }

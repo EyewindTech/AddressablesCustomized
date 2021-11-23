@@ -29,6 +29,19 @@ namespace UnityEditor.AddressableAssets.Settings
             return true;
         }
 
+        internal bool AddLabelName(string name, int index)
+        {
+            if (m_LabelNames.Contains(name))
+                return false;
+            if (name.Contains("[") && name.Contains("]"))
+            {
+                Debug.LogErrorFormat("Label name '{0}' cannot contain '[ ]'.", name);
+                return false;
+            }
+            m_LabelNames.Insert(index, name);
+            return true;
+        }
+
         internal string GetUniqueLabelName(string name)
         {
             var newName = name;
@@ -50,6 +63,9 @@ namespace UnityEditor.AddressableAssets.Settings
 
         internal string GetString(HashSet<string> val, float width) //TODO - use width to add the "..." in the right place.
         {
+            if (val == null || val.Count == 0)
+                return "";
+            
             StringBuilder sb = new StringBuilder();
             int counter = 0;
             foreach (var v in m_LabelNames)
@@ -69,6 +85,11 @@ namespace UnityEditor.AddressableAssets.Settings
                 }
             }
             return sb.ToString();
+        }
+
+        internal int GetIndexOfLabel(string label)
+        {
+            return m_LabelNames.IndexOf(label);
         }
 
         internal long GetMask(HashSet<string> maskSet)

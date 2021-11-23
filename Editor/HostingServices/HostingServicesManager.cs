@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using UnityEditor.AddressableAssets.Build.DataBuilders;
 using UnityEditor.AddressableAssets.Settings;
 using UnityEngine;
 using UnityEngine.Serialization;
@@ -21,21 +22,12 @@ namespace UnityEditor.AddressableAssets.HostingServices
         internal const string KPrivateIpAddressKey = "PrivateIpAddress";
 
         [Serializable]
-        internal class HostingServiceInfo : ISerializationCallbackReceiver
+        internal class HostingServiceInfo
         {
             [SerializeField]
             internal string classRef;
             [SerializeField]
             internal KeyDataStore dataStore;
-
-            public void OnBeforeSerialize() {}
-
-            public void OnAfterDeserialize()
-            {
-                //handle change to namespace that happened just before Addressables 1.0.0.  Can remove once upgrades from 0.5.x are no longer expected
-                if (classRef.Contains("UnityEditor.AddressableAssets.HttpHostingService"))
-                    classRef = classRef.Replace("UnityEditor.AddressableAssets.HttpHostingService", "UnityEditor.AddressableAssets.HostingServices.HttpHostingService");
-            }
         }
 
         [FormerlySerializedAs("m_hostingServiceInfos")]
@@ -56,10 +48,27 @@ namespace UnityEditor.AddressableAssets.HostingServices
             typeof(HttpHostingService)
         };
 
-        private static Dictionary<int, WeakReference<IHostingService>> s_HostingServicesCache = new Dictionary<int, WeakReference<IHostingService>>();
         Dictionary<IHostingService, HostingServiceInfo> m_HostingServiceInfoMap;
         ILogger m_Logger;
         List<Type> m_RegisteredServiceTypes;
+
+        internal bool exitingEditMode = false;
+
+        [Serializable]
+        internal class ProfileVariablesInfo
+        {
+            [SerializeField]
+            internal string key;
+            [SerializeField]
+            internal string value;
+        }
+        [SerializeField]
+        List<ProfileVariablesInfo> m_GlobalProfileVariablesInfos;
+
+        /// <summary>
+        /// Key/Value pairs valid for profile variable substitution
+        /// </summary>
+        public Dictionary<string, string> GlobalProfileVariables { get; private set; }
 
         /// <summary>
         /// Direct logging output of all managed services
@@ -107,11 +116,6 @@ namespace UnityEditor.AddressableAssets.HostingServices
         }
 
         /// <summary>
-        /// Key/Value pairs valid for profile variable substitution
-        /// </summary>
-        public Dictionary<string, string> GlobalProfileVariables { get; private set; }
-
-        /// <summary>
         /// Indicates whether or not this HostingServiceManager is initialized
         /// </summary>
         public bool IsInitialized
@@ -156,9 +160,12 @@ namespace UnityEditor.AddressableAssets.HostingServices
         /// </summary>
         public HostingServicesManager()
         {
+            m_GlobalProfileVariablesInfos = new List<ProfileVariablesInfo>();
             GlobalProfileVariables = new Dictionary<string, string>();
+            m_HostingServiceInfos = new List<HostingServiceInfo>();
             m_HostingServiceInfoMap = new Dictionary<IHostingService, HostingServiceInfo>();
             m_RegisteredServiceTypes = new List<Type>();
+            m_RegisteredServiceTypeRefs = new List<string>();
             m_Logger = Debug.unityLogger;
         }
 
@@ -242,8 +249,8 @@ namespace UnityEditor.AddressableAssets.HostingServices
             m_Settings.profileSettings.RegisterProfileStringEvaluationFunc(svc.EvaluateProfileString);
 
             m_HostingServiceInfoMap.Add(svc, info);
-            s_HostingServicesCache[svc.InstanceId] = new WeakReference<IHostingService>(svc);
-            m_Settings.SetDirty(AddressableAssetSettings.ModificationEvent.HostingServicesManagerModified, this, true, true);
+            m_Settings.SetDirty(AddressableAssetSettings.ModificationEvent.HostingServicesManagerModified, this, true, true);            
+            AddressableAssetUtility.OpenAssetIfUsingVCIntegration(m_Settings);
 
             m_NextInstanceId++;
             return svc;
@@ -262,8 +269,8 @@ namespace UnityEditor.AddressableAssets.HostingServices
             svc.StopHostingService();
             m_Settings.profileSettings.UnregisterProfileStringEvaluationFunc(svc.EvaluateProfileString);
             m_HostingServiceInfoMap.Remove(svc);
-            s_HostingServicesCache.Remove(svc.InstanceId);
             m_Settings.SetDirty(AddressableAssetSettings.ModificationEvent.HostingServicesManagerModified, this, true, true);
+            AddressableAssetUtility.OpenAssetIfUsingVCIntegration(m_Settings);
         }
 
         /// <summary>
@@ -276,13 +283,26 @@ namespace UnityEditor.AddressableAssets.HostingServices
             m_Settings.OnModification -= OnSettingsModification;
             m_Settings.OnModification += OnSettingsModification;
             m_Settings.profileSettings.RegisterProfileStringEvaluationFunc(EvaluateGlobalProfileVariableKey);
+
+            bool hasAnEnabledService = false;
             foreach (var svc in HostingServices)
             {
                 svc.Logger = m_Logger;
                 m_Settings.profileSettings.RegisterProfileStringEvaluationFunc(svc.EvaluateProfileString);
+                var baseSvc = svc as BaseHostingService;
+                baseSvc?.OnEnable();
+
+                if (!hasAnEnabledService)
+                    hasAnEnabledService = svc.IsHostingServiceRunning || baseSvc != null && baseSvc.WasEnabled;
             }
 
-            RefreshGlobalProfileVariables();
+            if (!exitingEditMode || exitingEditMode && hasAnEnabledService && IsUsingPackedPlayMode())
+                RefreshGlobalProfileVariables();
+        }
+
+        bool IsUsingPackedPlayMode()
+        {
+            return m_Settings.ActivePlayModeDataBuilder != null && m_Settings.ActivePlayModeDataBuilder.GetType() == typeof(BuildScriptPackedPlayMode);
         }
 
         /// <summary>
@@ -299,6 +319,7 @@ namespace UnityEditor.AddressableAssets.HostingServices
             {
                 svc.Logger = null;
                 m_Settings.profileSettings.UnregisterProfileStringEvaluationFunc(svc.EvaluateProfileString);
+                (svc as BaseHostingService)?.OnDisable();
             }
         }
 
@@ -307,7 +328,12 @@ namespace UnityEditor.AddressableAssets.HostingServices
         /// </summary>
         public void OnBeforeSerialize()
         {
-            m_HostingServiceInfos = new List<HostingServiceInfo>();
+            // https://docs.unity3d.com/ScriptReference/EditorWindow.OnInspectorUpdate.html
+            // Because the manager is a serialized field in the Addressables settings, this method is called
+            // at 10 frames per second when the settings are opened in the inspector...
+            // Be careful what you put in there...
+
+            m_HostingServiceInfos.Clear();
             foreach (var svc in HostingServices)
             {
                 var info = m_HostingServiceInfoMap[svc];
@@ -315,9 +341,18 @@ namespace UnityEditor.AddressableAssets.HostingServices
                 svc.OnBeforeSerialize(info.dataStore);
             }
 
-            m_RegisteredServiceTypeRefs = new List<string>();
+            m_RegisteredServiceTypeRefs.Clear();
             foreach (var type in m_RegisteredServiceTypes)
                 m_RegisteredServiceTypeRefs.Add(TypeToClassRef(type));
+
+            m_GlobalProfileVariablesInfos.Clear();
+            foreach (var profileVar in GlobalProfileVariables)
+            {
+                var info = new ProfileVariablesInfo();
+                info.key = profileVar.Key;
+                info.value = profileVar.Value;
+                m_GlobalProfileVariablesInfos.Add(info);
+            }
         }
 
         /// <summary> Ensure object is ready for serialization, and calls <see cref="IHostingService.OnBeforeSerialize"/> methods
@@ -328,17 +363,11 @@ namespace UnityEditor.AddressableAssets.HostingServices
             m_HostingServiceInfoMap = new Dictionary<IHostingService, HostingServiceInfo>();
             foreach (var svcInfo in m_HostingServiceInfos)
             {
-                IHostingService svc = null;
-                var id = svcInfo.dataStore.GetData(BaseHostingService.k_InstanceIdKey, -1);
-                if (id == -1 || !s_HostingServicesCache.ContainsKey(id) || !s_HostingServicesCache[id].TryGetTarget(out svc))
-                {
-                    svc = CreateHostingServiceInstance(svcInfo.classRef);
-                }
+                IHostingService svc = CreateHostingServiceInstance(svcInfo.classRef);
 
                 if (svc == null) continue;
                 svc.OnAfterDeserialize(svcInfo.dataStore);
                 m_HostingServiceInfoMap.Add(svc, svcInfo);
-                s_HostingServicesCache[svc.InstanceId] = new WeakReference<IHostingService>(svc);
             }
 
             m_RegisteredServiceTypes = new List<Type>();
@@ -347,6 +376,12 @@ namespace UnityEditor.AddressableAssets.HostingServices
                 var type = Type.GetType(typeRef, false);
                 if (type == null) continue;
                 m_RegisteredServiceTypes.Add(type);
+            }
+
+            GlobalProfileVariables = new Dictionary<string, string>();
+            foreach (var profileVar in m_GlobalProfileVariablesInfos)
+            {
+                GlobalProfileVariables.Add(profileVar.key, profileVar.value);
             }
         }
 
@@ -367,13 +402,15 @@ namespace UnityEditor.AddressableAssets.HostingServices
             if (ipAddressList.Count > 0)
             {
                 vars.Add(KPrivateIpAddressKey, ipAddressList[0].ToString());
-                
+
                 if (ipAddressList.Count > 1)
                 {
                     for (var i = 1; i < ipAddressList.Count; i++)
                         vars.Add(KPrivateIpAddressKey + "_" + i, ipAddressList[i].ToString());
                 }
             }
+            m_Settings.SetDirty(AddressableAssetSettings.ModificationEvent.HostingServicesManagerModified, this, true, true);
+            AddressableAssetUtility.OpenAssetIfUsingVCIntegration(m_Settings);
         }
 
         // Internal for unit tests
@@ -395,10 +432,25 @@ namespace UnityEditor.AddressableAssets.HostingServices
                 case AddressableAssetSettings.ModificationEvent.GroupSchemaModified:
                 case AddressableAssetSettings.ModificationEvent.ActiveProfileSet:
                 case AddressableAssetSettings.ModificationEvent.BuildSettingsChanged:
+                case AddressableAssetSettings.ModificationEvent.ProfileModified:
+                    var profileRemoteBuildPath = m_Settings.profileSettings.GetValueByName(m_Settings.activeProfileId, AddressableAssetSettings.kRemoteBuildPath);
+                    if (profileRemoteBuildPath != null && (profileRemoteBuildPath.Contains('[') || !CurrentContentRootsContain(profileRemoteBuildPath)))
+                        ConfigureAllHostingServices();
+                    break;
                 case AddressableAssetSettings.ModificationEvent.BatchModification:
                     ConfigureAllHostingServices();
                     break;
             }
+        }
+
+        bool CurrentContentRootsContain(string root)
+        {
+            foreach (var svc in HostingServices)
+            {
+                if (!svc.HostingServiceContentRoots.Contains(root))
+                    return false;
+            }
+            return true;
         }
 
         void ConfigureAllHostingServices()

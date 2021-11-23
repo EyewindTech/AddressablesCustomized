@@ -20,8 +20,12 @@ using System.Text.RegularExpressions;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using UnityEngine.AddressableAssets.ResourceProviders.Tests;
+using UnityEngine.AddressableAssets.Tests;
+using UnityEngine.Networking;
 using UnityEngine.U2D;
 using Object = UnityEngine.Object;
+using Texture2D = UnityEngine.Texture2D;
 
 namespace AddressableAssetsIntegrationTests
 {
@@ -53,7 +57,9 @@ namespace AddressableAssetsIntegrationTests
             //Test
             Assert.DoesNotThrow(() =>
             {
-                m_Addressables.LoadResourceLocationsAsync("noSuchLabel", typeof(object));
+                var handle = m_Addressables.LoadResourceLocationsAsync("noSuchLabel", typeof(object));
+                handle.WaitForCompletion();
+                handle.Release();
             });
         }
 
@@ -68,6 +74,62 @@ namespace AddressableAssetsIntegrationTests
             {
                 m_Addressables.LoadResourceLocationsAsync(AddressablesTestUtility.GetPrefabLabel("BASE"), typeof(GameObject));
             });
+        }
+
+        [UnityTest]
+        public IEnumerator LoadResourceLocations_SubObjects_ReturnsCorrectResourceTypes()
+        {
+            yield return Init();
+            string subObjectsAddress = "assetWithDifferentTypedSubAssets";
+
+            var loadLocsHandle = m_Addressables.LoadResourceLocationsAsync(subObjectsAddress, typeof(object));
+            yield return loadLocsHandle;
+
+            Assert.AreEqual(3, loadLocsHandle.Result.Count);
+            Assert.IsTrue(loadLocsHandle.Result.Any(loc => loc.ResourceType == typeof(Mesh)));
+            Assert.IsTrue(loadLocsHandle.Result.Any(loc => loc.ResourceType == typeof(Material)));
+            Assert.IsTrue(loadLocsHandle.Result.Any(loc => loc.ResourceType == typeof(TestObject)));
+
+            loadLocsHandle.Release();
+        }
+
+        [UnityTest]
+        public IEnumerator LoadResourceLocations_ReturnsCorrectResourceTypes()
+        {
+            yield return Init();
+            string spriteAddress = "sprite";
+
+            var loadLocsHandle = m_Addressables.LoadResourceLocationsAsync(spriteAddress, typeof(object));
+            yield return loadLocsHandle;
+
+            Assert.AreEqual(2, loadLocsHandle.Result.Count);
+            Assert.IsTrue(loadLocsHandle.Result.Any(loc => loc.ResourceType == typeof(Texture2D)));
+            Assert.IsTrue(loadLocsHandle.Result.Any(loc => loc.ResourceType == typeof(Sprite)));
+
+            loadLocsHandle.Release();
+        }
+
+        [UnityTest]
+        public IEnumerator LoadResourceLocations_SpecificType_ReturnsCorrectResourceTypes()
+        {
+            yield return Init();
+            string spriteAddress = "sprite";
+
+            var loadLocsHandle = m_Addressables.LoadResourceLocationsAsync(spriteAddress, typeof(Sprite));
+            yield return loadLocsHandle;
+
+            Assert.AreEqual(1, loadLocsHandle.Result.Count);
+            Assert.AreEqual(typeof(Sprite), loadLocsHandle.Result[0].ResourceType);
+
+            loadLocsHandle.Release();
+
+            loadLocsHandle = m_Addressables.LoadResourceLocationsAsync(spriteAddress, typeof(Texture2D));
+            yield return loadLocsHandle;
+
+            Assert.AreEqual(1, loadLocsHandle.Result.Count);
+            Assert.AreEqual(typeof(Texture2D), loadLocsHandle.Result[0].ResourceType);
+
+            loadLocsHandle.Release();
         }
 
         [UnityTest]
@@ -107,6 +169,76 @@ namespace AddressableAssetsIntegrationTests
         }
 
         [UnityTest]
+        [TestCase("noSuchKey", ExpectedResult = null)]
+        [TestCase("noSuchKey1, noSuchKey2", ExpectedResult = null)]
+        public IEnumerator LoadAsset_InvalidKeyThrowsInvalidKeyException_MultipleKeys(string keys)
+        {
+            //Setup
+            yield return Init();
+            string[] keysArray = keys.Replace(" ", "").Split(',');
+
+            //Test
+            AsyncOperationHandle handle = default(AsyncOperationHandle);
+            using (new IgnoreFailingLogMessage())
+            {
+                handle = m_Addressables.LoadAssetAsync<GameObject>(keysArray);
+            }
+
+            string keysErrorString = keysArray.Length > 1 ? $"Keys={keys}" : $"Key={keys}";
+            Assert.AreEqual(
+                $"Exception of type 'UnityEngine.AddressableAssets.InvalidKeyException' was thrown., {keysErrorString}, Type=UnityEngine.GameObject", handle.OperationException.Message);
+            yield return handle;
+
+            //Cleanup
+            handle.Release();
+        }
+
+        [UnityTest]
+        [TestCase("noSuchKey", ExpectedResult = null)]
+        [TestCase("noSuchKey1, noSuchKey2", ExpectedResult = null)]
+        public IEnumerator LoadAssets_InvalidKeyThrowsInvalidKeyException_MultipleKeys(string keys)
+        {
+            //Setup
+            yield return Init();
+            string[] keysArray = keys.Replace(" ", "").Split(',');
+
+            //Test
+            AsyncOperationHandle handle = default(AsyncOperationHandle);
+            using (new IgnoreFailingLogMessage())
+            {
+                handle = m_Addressables.LoadAssetsAsync<GameObject>(keysArray, null, Addressables.MergeMode.Union, true);
+            }
+
+            string keysErrorString = keysArray.Length > 1 ? $"Keys={keys}" : $"Key={keys}";
+            Assert.AreEqual($"Exception of type 'UnityEngine.AddressableAssets.InvalidKeyException' was thrown., {keysErrorString}, Type=UnityEngine.GameObject, MergeMode=Union", handle.OperationException.Message);
+            yield return handle;
+
+            //Cleanup
+            handle.Release();
+        }
+
+        [UnityTest]
+        public IEnumerator LoadAssets_InvalidKeyThrowsInvalidKeyException_MixedKeys()
+        {
+            //Setup
+            yield return Init();
+            object[] keys = new object[] {"noSuchKey", 123};
+
+            //Test
+            AsyncOperationHandle handle = default(AsyncOperationHandle);
+            using (new IgnoreFailingLogMessage())
+            {
+                handle = m_Addressables.LoadAssetsAsync<GameObject>(keys, null, Addressables.MergeMode.Union, true);
+            }
+
+            Assert.AreEqual($"Exception of type 'UnityEngine.AddressableAssets.InvalidKeyException' was thrown., Keys=noSuchKey, 123, Type=UnityEngine.GameObject, MergeMode=Union", handle.OperationException.Message);
+            yield return handle;
+
+            //Cleanup
+            handle.Release();
+        }
+
+        [UnityTest]
         public IEnumerator CanLoadTextureAsSprite()
         {
             //Setup
@@ -139,59 +271,59 @@ namespace AddressableAssetsIntegrationTests
             Assert.AreEqual("topleft", op2.Result.name);
             op2.Release();
         }
-        
+
         [UnityTest]
         public IEnumerator CanLoadFromFolderEntry_SpriteAtlas()
         {
-	        //Setup
-	        yield return Init();
+            //Setup
+            yield return Init();
 
-	        var op = m_Addressables.LoadAssetAsync<SpriteAtlas>("folderEntry/atlas.spriteatlas");
-	        yield return op;
-	        Assert.IsNotNull(op.Result);
-	        Assert.AreEqual(typeof(SpriteAtlas), op.Result.GetType());
-	        op.Release();
+            var op = m_Addressables.LoadAssetAsync<SpriteAtlas>("folderEntry/atlas.spriteatlas");
+            yield return op;
+            Assert.IsNotNull(op.Result);
+            Assert.AreEqual(typeof(SpriteAtlas), op.Result.GetType());
+            op.Release();
         }
 
         [UnityTest]
         public IEnumerator CanLoadFromFolderEntry_SpriteFromSpriteAtlas()
         {
-	        //Setup
-	        yield return Init();
+            //Setup
+            yield return Init();
 
-	        var op = m_Addressables.LoadAssetAsync<Sprite>("folderEntry/atlas.spriteatlas[sprite]");
-	        yield return op;
-	        Assert.IsNotNull(op.Result);
-	        Assert.AreEqual(typeof(Sprite), op.Result.GetType());
-	        op.Release();
+            var op = m_Addressables.LoadAssetAsync<Sprite>("folderEntry/atlas.spriteatlas[sprite]");
+            yield return op;
+            Assert.IsNotNull(op.Result);
+            Assert.AreEqual(typeof(Sprite), op.Result.GetType());
+            op.Release();
         }
-        
+
         [UnityTest]
         public IEnumerator CanLoadFromFolderEntry_Texture()
         {
-	        //Setup
-	        yield return Init();
+            //Setup
+            yield return Init();
 
-	        var op = m_Addressables.LoadAssetAsync<Texture2D>("folderEntry/spritesheet.png");
-	        yield return op;
-	        Assert.IsNotNull(op.Result);
-	        Assert.AreEqual(typeof(Texture2D), op.Result.GetType());
-	        op.Release();
+            var op = m_Addressables.LoadAssetAsync<Texture2D>("folderEntry/spritesheet.png");
+            yield return op;
+            Assert.IsNotNull(op.Result);
+            Assert.AreEqual(typeof(Texture2D), op.Result.GetType());
+            op.Release();
         }
-        
+
         [UnityTest]
         public IEnumerator CanLoadFromFolderEntry_SpriteFromTexture()
         {
-	        //Setup
-	        yield return Init();
+            //Setup
+            yield return Init();
 
-	        var op = m_Addressables.LoadAssetAsync<Sprite>("folderEntry/spritesheet.png[topleft]");
-	        yield return op;
-	        Assert.IsNotNull(op.Result);
-	        Assert.AreEqual(typeof(Sprite), op.Result.GetType());
-	        op.Release();
+            var op = m_Addressables.LoadAssetAsync<Sprite>("folderEntry/spritesheet.png[topleft]");
+            yield return op;
+            Assert.IsNotNull(op.Result);
+            Assert.AreEqual(typeof(Sprite), op.Result.GetType());
+            op.Release();
         }
-        
+
         [UnityTest]
         public IEnumerator CanLoadAllSpritesAsArray()
         {
@@ -237,6 +369,22 @@ namespace AddressableAssetsIntegrationTests
             m_Addressables.InternalIdTransformFunc = null;
             var originalId = m_Addressables.ResourceManager.TransformInternalId(loc);
             Assert.AreEqual("original", originalId);
+        }
+
+        [UnityTest]
+        public IEnumerator WebRequestOverrideTest()
+        {
+            yield return Init();
+            var originalUrl = "http://127.0.0.1/original.asset";
+            var replacedUrl = "http://127.0.0.1/replaced.asset";
+            var uwr = new UnityWebRequest(originalUrl);
+
+            m_Addressables.WebRequestOverride = request => request.url = replacedUrl;
+            m_Addressables.ResourceManager.WebRequestOverride(uwr);
+            var currentUrl = uwr.url;
+            uwr.Dispose();
+            m_Addressables.WebRequestOverride = null;
+            Assert.AreEqual(replacedUrl, currentUrl);
         }
 
         [UnityTest]
@@ -422,12 +570,36 @@ namespace AddressableAssetsIntegrationTests
             string catalogHashPath = "fakeCatalogPath.hash";
 
             var loc = m_Addressables.CreateCatalogLocationWithHashDependencies(catalogPath, catalogHashPath);
+            Assert.AreEqual(2, loc.Dependencies.Count);
             var remoteLocation = loc.Dependencies[(int)ContentCatalogProvider.DependencyHashIndex.Remote];
             var cacheLocation = loc.Dependencies[(int)ContentCatalogProvider.DependencyHashIndex.Cache];
 
-            Assert.AreEqual(2, loc.Dependencies.Count);
             Assert.AreEqual(catalogHashPath, remoteLocation.ToString());
             Assert.AreEqual(m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + catalogHashPath.GetHashCode() + catalogHashPath.Substring(catalogHashPath.LastIndexOf("."))), cacheLocation.ToString());
+        }
+
+        [UnityTest]
+        public IEnumerator LoadContentCatalogAsync_LocationsHaveTimeout()
+        {
+            yield return Init();
+            string catalogPath = "fakeCatalogPath.json";
+            string catalogHashPath = "fakeCatalogPath.hash";
+
+            m_Addressables.CatalogRequestsTimeout = 13;
+            var loc = m_Addressables.CreateCatalogLocationWithHashDependencies(catalogPath, catalogHashPath);
+            Assert.AreEqual(2, loc.Dependencies.Count);
+            var remoteLocation = loc.Dependencies[(int)ContentCatalogProvider.DependencyHashIndex.Remote];
+            var cacheLocation = loc.Dependencies[(int)ContentCatalogProvider.DependencyHashIndex.Cache];
+
+            var data = loc.Data as ProviderLoadRequestOptions;
+            Assert.IsNotNull(data);
+            Assert.AreEqual(data.WebRequestTimeout, m_Addressables.CatalogRequestsTimeout);
+            data = remoteLocation.Data as ProviderLoadRequestOptions;
+            Assert.IsNotNull(data);
+            Assert.AreEqual(data.WebRequestTimeout, m_Addressables.CatalogRequestsTimeout);
+            data = cacheLocation.Data as ProviderLoadRequestOptions;
+            Assert.IsNotNull(data);
+            Assert.AreEqual(data.WebRequestTimeout, m_Addressables.CatalogRequestsTimeout);
         }
 
         [UnityTest]
@@ -537,12 +709,53 @@ namespace AddressableAssetsIntegrationTests
         private const string kCatalogRemotePath = "remotecatalog.json";
         private const string kCatalogFolderPath = "Assets/CatalogTestFolder";
 
+        bool CreateCatalogAtFakeRemotePath(string fakeRemotePath, string catalogFolderPath = kCatalogFolderPath)
+        {
+            Directory.CreateDirectory(catalogFolderPath);
+            if (m_Addressables.m_ResourceLocators[0].CatalogLocation == null)
+            {
+#if UNITY_EDITOR
+                ContentCatalogData data = new ContentCatalogData(new List<ContentCatalogDataEntry>
+                {
+                    new ContentCatalogDataEntry(typeof(string), "testString", "test.provider", new[] { "key" })
+                }, "test_catalog");
+                File.WriteAllText(fakeRemotePath, JsonUtility.ToJson(data));
+#else
+                return false;
+#endif
+            }
+            else
+            {
+                string baseCatalogPath = m_Addressables.m_ResourceLocators[0].CatalogLocation.InternalId;
+                if (baseCatalogPath.StartsWith("file://"))
+                    baseCatalogPath = new Uri(m_Addressables.m_ResourceLocators[0].CatalogLocation.InternalId).AbsolutePath;
+                File.Copy(baseCatalogPath, fakeRemotePath);
+            }
+
+            return true;
+        }
+
         private string WriteHashFileForCatalog(string catalogPath, string hash)
         {
             string hashPath = catalogPath.Replace(".json", ".hash");
             Directory.CreateDirectory(Path.GetDirectoryName(hashPath));
             File.WriteAllText(hashPath, hash);
             return hashPath;
+        }
+
+        void StubTextAndJsonProviders()
+        {
+            var textProvider = m_Addressables.ResourceManager.ResourceProviders.FirstOrDefault(rp => rp.GetType() == typeof(TextDataProvider)) as TextDataProvider;
+            var jsonProvider = m_Addressables.ResourceManager.ResourceProviders.FirstOrDefault(rp => rp.GetType() == typeof(JsonAssetProvider)) as JsonAssetProvider;
+
+            var textDataProviderStub = new TextDataProviderStub(kCatalogFolderPath, textProvider);
+            var jsonAssetProviderStub = new JsonAssetProviderStub(kCatalogFolderPath, jsonProvider);
+
+            m_Addressables.ResourceManager.ResourceProviders.Remove(textProvider);
+            m_Addressables.ResourceManager.ResourceProviders.Remove(jsonProvider);
+            m_Addressables.ResourceManager.ResourceProviders.Add(textDataProviderStub);
+            m_Addressables.ResourceManager.ResourceProviders.Add(jsonAssetProviderStub);
+            m_Addressables.ResourceManager.m_providerMap.Clear();
         }
 
         [UnityTest]
@@ -578,7 +791,38 @@ namespace AddressableAssetsIntegrationTests
             yield return op1;
 
             string fullRemoteHashPath = fullRemotePath.Replace(".json", ".hash");
-            string cachedDataPath = m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + fullRemoteHashPath.GetHashCode() + fullRemoteHashPath.Substring(fullRemoteHashPath.LastIndexOf(".")));
+            string cachedDataPath = m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + fullRemoteHashPath.GetHashCode() + fullRemotePath.Substring(fullRemotePath.LastIndexOf(".")));
+            string cachedHashPath = cachedDataPath.Replace(".json", ".hash");
+            Assert.IsTrue(File.Exists(cachedDataPath));
+            Assert.IsTrue(File.Exists(cachedHashPath));
+            Assert.AreEqual("123", File.ReadAllText(cachedHashPath));
+
+            m_Addressables.Release(op1);
+            Directory.Delete(kCatalogFolderPath, true);
+            File.Delete(cachedDataPath);
+            File.Delete(cachedHashPath);
+        }
+
+        [UnityTest]
+        public IEnumerator LoadingContentCatalog_CachesCatalogData_IfValidHashFoundAndRemotePathContainsQueryParameters()
+        {
+            yield return Init();
+
+            string fakeFullRemotePath = Path.Combine(kCatalogFolderPath, kCatalogRemotePath);
+            if (!CreateCatalogAtFakeRemotePath(fakeFullRemotePath))
+                Assert.Ignore($"Skipping test {TestContext.CurrentContext.Test.Name} due to missing CatalogLocation.");
+            WriteHashFileForCatalog(fakeFullRemotePath, "123");
+
+            StubTextAndJsonProviders();
+
+            string catalogRemotePath = "http://127.0.0.1/" + kCatalogRemotePath;
+            string catalogRemotePathWithQueryParams = catalogRemotePath + "?param1=value1&param2=value2:date=number";
+            var op1 = m_Addressables.LoadContentCatalogAsync(catalogRemotePathWithQueryParams, false);
+            yield return op1;
+
+            var expectedHash = catalogRemotePath.Replace(".json", ".hash").GetHashCode();
+            string expectedCatalogName = expectedHash + ".json";
+            string cachedDataPath = m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + expectedCatalogName);
             string cachedHashPath = cachedDataPath.Replace(".json", ".hash");
             Assert.IsTrue(File.Exists(cachedDataPath));
             Assert.IsTrue(File.Exists(cachedHashPath));
@@ -643,8 +887,8 @@ namespace AddressableAssetsIntegrationTests
 
             string fullRemoteHashPath = fullRemotePath.Replace(".json", ".hash");
             string fullRemoteHashPathTwo = fullRemotePathTwo.Replace(".json", ".hash");
-            string cachedDataPath = m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + fullRemoteHashPath.GetHashCode() + fullRemoteHashPath.Substring(fullRemoteHashPath.LastIndexOf(".")));
-            string cachedDataPathTwo = m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + fullRemoteHashPathTwo.GetHashCode() + fullRemoteHashPathTwo.Substring(fullRemoteHashPathTwo.LastIndexOf(".")));
+            string cachedDataPath = m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + fullRemoteHashPath.GetHashCode() + fullRemotePath.Substring(fullRemotePath.LastIndexOf(".")));
+            string cachedDataPathTwo = m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + fullRemoteHashPathTwo.GetHashCode() + fullRemotePathTwo.Substring(fullRemotePathTwo.LastIndexOf(".")));
             string cachedHashPath = cachedDataPath.Replace(".json", ".hash");
             string cachedHashPathTwo = cachedDataPathTwo.Replace(".json", ".hash");
             Assert.IsTrue(File.Exists(cachedDataPath));
@@ -798,7 +1042,7 @@ namespace AddressableAssetsIntegrationTests
             Directory.CreateDirectory(kCatalogFolderPath);
             string fullRemotePath = Path.Combine(kCatalogFolderPath, kCatalogRemotePath);
             string fullRemoteHashPath = fullRemotePath.Replace(".json", ".hash");
-            string cachedDataPath = m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + fullRemoteHashPath.GetHashCode() + fullRemoteHashPath.Substring(fullRemoteHashPath.LastIndexOf(".")));
+            string cachedDataPath = m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + fullRemoteHashPath.GetHashCode() + fullRemotePath.Substring(fullRemotePath.LastIndexOf(".")));
             string cachedHashPath = cachedDataPath.Replace(".json", ".hash");
             string remoteHashPath = WriteHashFileForCatalog(fullRemotePath, "123");
 
@@ -823,6 +1067,46 @@ namespace AddressableAssetsIntegrationTests
             Assert.AreEqual("456", File.ReadAllText(cachedHashPath));
 
             m_Addressables.Release(op2);
+            Directory.Delete(kCatalogFolderPath, true);
+            File.Delete(cachedDataPath);
+            File.Delete(cachedHashPath);
+        }
+
+        [UnityTest]
+        public IEnumerator UpdateContentCatalog_UpdatesCachedData_IfCacheCorrupted()
+        {
+            yield return Init();
+            if (m_Addressables.m_ResourceLocators[0].CatalogLocation == null)
+            {
+                UnityEngine.Debug.Log($"Skipping test {nameof(LoadingContentCatalog_UpdatesCachedData_IfHashFileUpdates)} due to missing CatalogLocation.");
+                yield break;
+            }
+
+            Directory.CreateDirectory(kCatalogFolderPath);
+            string fullRemotePath = Path.Combine(kCatalogFolderPath, kCatalogRemotePath);
+            string fullRemoteHashPath = fullRemotePath.Replace(".json", ".hash");
+            string cachedDataPath = m_Addressables.ResolveInternalId(AddressablesImpl.kCacheDataFolder + fullRemoteHashPath.GetHashCode() + fullRemotePath.Substring(fullRemotePath.LastIndexOf(".")));
+            string cachedHashPath = cachedDataPath.Replace(".json", ".hash");
+            string remoteHashPath = WriteHashFileForCatalog(fullRemoteHashPath, "123");
+
+            string baseCatalogPath = m_Addressables.m_ResourceLocators[0].CatalogLocation.InternalId;
+            if (baseCatalogPath.StartsWith("file://"))
+                baseCatalogPath = new Uri(m_Addressables.m_ResourceLocators[0].CatalogLocation.InternalId).AbsolutePath;
+            File.Copy(baseCatalogPath, fullRemotePath);
+
+            File.WriteAllText(remoteHashPath, File.ReadAllText(cachedHashPath));
+            File.WriteAllText(cachedDataPath, "corrupted content");
+
+            //load from fullRemotePath will first load cachedDataPath, then load fullRemotePath on error
+            var op = m_Addressables.LoadContentCatalogAsync(fullRemotePath, false);
+            LogAssert.Expect(LogType.Exception, new Regex(".*JSON parse error.*"));
+            yield return op;
+
+            Assert.IsTrue(File.Exists(cachedDataPath));
+            Assert.IsTrue(File.Exists(cachedHashPath));
+            Assert.AreEqual(File.ReadAllText(cachedDataPath), File.ReadAllText(fullRemotePath));
+
+            m_Addressables.Release(op);
             Directory.Delete(kCatalogFolderPath, true);
             File.Delete(cachedDataPath);
             File.Delete(cachedHashPath);
@@ -990,12 +1274,12 @@ namespace AddressableAssetsIntegrationTests
             long expectedSize = 0;
             var locMap = new ResourceLocationMap("TestLocator");
 
-            var bundleLoc1 = new ResourceLocationBase("sizeTestBundle1", "http://nowhere.com/mybundle1.bundle", typeof(AssetBundleProvider).FullName, typeof(object));
+            var bundleLoc1 = new ResourceLocationBase("sizeTestBundle1", "http://nonExistingUrlForAddressableTests1337.com/mybundle1.bundle", typeof(AssetBundleProvider).FullName, typeof(object));
             var sizeData1 = (bundleLoc1.Data = CreateLocationSizeData("sizeTestBundle1", 1000, 123, "hashstring1")) as ILocationSizeData;
             if (sizeData1 != null)
                 expectedSize += sizeData1.ComputeSize(bundleLoc1, null);
 
-            var bundleLoc2 = new ResourceLocationBase("sizeTestBundle2", "http://nowhere.com/mybundle2.bundle", typeof(AssetBundleProvider).FullName, typeof(object));
+            var bundleLoc2 = new ResourceLocationBase("sizeTestBundle2", "http://nonExistingUrlForAddressableTests1337.com/mybundle2.bundle", typeof(AssetBundleProvider).FullName, typeof(object));
             var sizeData2 = (bundleLoc2.Data = CreateLocationSizeData("sizeTestBundle2", 500, 123, "hashstring2")) as ILocationSizeData;
             if (sizeData2 != null)
                 expectedSize += sizeData2.ComputeSize(bundleLoc2, null);
@@ -1013,8 +1297,7 @@ namespace AddressableAssetsIntegrationTests
             dOp.Release();
         }
 
-        [UnityTest]
-        public IEnumerator GetDownloadSize_CalculatesCachedBundles()
+        public IEnumerator GetDownloadSize_CalculatesCachedBundlesInternal()
         {
 #if ENABLE_CACHING
             yield return Init();
@@ -1027,7 +1310,7 @@ namespace AddressableAssetsIntegrationTests
             //Simulating a cached bundle
             string fakeCachePath = CreateFakeCachedBundle("cachedSizeTestBundle1", "be38e35d2177c282d5d6a2e54a803aab");
 
-            var bundleLoc1 = new ResourceLocationBase("cachedSizeTestBundle1", "http://nowhere.com/GetDownloadSize_CalculatesCachedBundlesBundle1.bundle",
+            var bundleLoc1 = new ResourceLocationBase("cachedSizeTestBundle1", "http://nonExistingUrlForAddressableTests1337.com/GetDownloadSize_CalculatesCachedBundlesBundle1.bundle",
                 typeof(AssetBundleProvider).FullName, typeof(object));
             var sizeData1 =
                 (bundleLoc1.Data = CreateLocationSizeData("cachedSizeTestBundle1", bundleSize1, 123,
@@ -1035,7 +1318,7 @@ namespace AddressableAssetsIntegrationTests
             if (sizeData1 != null)
                 expectedSize += sizeData1.ComputeSize(bundleLoc1, null);
 
-            var bundleLoc2 = new ResourceLocationBase("sizeTestBundle2", "http://nowhere.com/GetDownloadSize_CalculatesCachedBundlesBundle2.bundle",
+            var bundleLoc2 = new ResourceLocationBase("sizeTestBundle2", "http://nonExistingUrlForAddressableTests1337.com/GetDownloadSize_CalculatesCachedBundlesBundle2.bundle",
                 typeof(AssetBundleProvider).FullName, typeof(object));
             var sizeData2 =
                 (bundleLoc2.Data = CreateLocationSizeData("sizeTestBundle2", bundleSize2, 123,
@@ -1065,8 +1348,7 @@ namespace AddressableAssetsIntegrationTests
 #endif
         }
 
-        [UnityTest]
-        public IEnumerator GetDownloadSize_WithList_CalculatesCachedBundles()
+        public IEnumerator GetDownloadSize_WithList_CalculatesCachedBundlesInternal()
         {
 #if ENABLE_CACHING
             yield return Init();
@@ -1079,7 +1361,7 @@ namespace AddressableAssetsIntegrationTests
             //Simulating a cached bundle
             string fakeCachePath = CreateFakeCachedBundle("cachedSizeTestBundle1", "0e38e35d2177c282d5d6a2e54a803aab");
 
-            var bundleLoc1 = new ResourceLocationBase("cachedSizeTestBundle1", "http://nowhere.com/GetDownloadSize_WithList_CalculatesCachedBundlesBundle1.bundle",
+            var bundleLoc1 = new ResourceLocationBase("cachedSizeTestBundle1", "http://nonExistingUrlForAddressableTests1337.com/GetDownloadSize_WithList_CalculatesCachedBundlesBundle1.bundle",
                 typeof(AssetBundleProvider).FullName, typeof(object));
             var sizeData1 =
                 (bundleLoc1.Data = CreateLocationSizeData("cachedSizeTestBundle1", bundleSize1, 123,
@@ -1087,7 +1369,7 @@ namespace AddressableAssetsIntegrationTests
             if (sizeData1 != null)
                 expectedSize += sizeData1.ComputeSize(bundleLoc1, null);
 
-            var bundleLoc2 = new ResourceLocationBase("sizeTestBundle2", "http://nowhere.com/GetDownloadSize_WithList_CalculatesCachedBundlesBundle2.bundle",
+            var bundleLoc2 = new ResourceLocationBase("sizeTestBundle2", "http://nonExistingUrlForAddressableTests1337.com/GetDownloadSize_WithList_CalculatesCachedBundlesBundle2.bundle",
                 typeof(AssetBundleProvider).FullName, typeof(object));
             var sizeData2 =
                 (bundleLoc2.Data = CreateLocationSizeData("sizeTestBundle2", bundleSize2, 123,
@@ -1123,15 +1405,14 @@ namespace AddressableAssetsIntegrationTests
 #endif
         }
 
-        [UnityTest]
-        public IEnumerator GetDownloadSize_WithList_CalculatesCorrectSize_WhenAssetsReferenceSameBundle()
+        public IEnumerator GetDownloadSize_WithList_CalculatesCorrectSize_WhenAssetsReferenceSameBundleInternal()
         {
 #if ENABLE_CACHING
             yield return Init();
             long bundleSize1 = 1000;
             long expectedSize = 0;
 
-            var bundleLoc1 = new ResourceLocationBase("sizeTestBundle1", "http://nowhere.com/GetDownloadSize_WithList_CalculatesCachedBundlesBundle1.bundle",
+            var bundleLoc1 = new ResourceLocationBase("sizeTestBundle1", "http://nonExistingUrlForAddressableTests1337.com/GetDownloadSize_WithList_CalculatesCachedBundlesBundle1.bundle",
                 typeof(AssetBundleProvider).FullName, typeof(object));
             var sizeData1 =
                 (bundleLoc1.Data = CreateLocationSizeData("cachedSizeTestBundle1", bundleSize1, 123,
@@ -1169,7 +1450,7 @@ namespace AddressableAssetsIntegrationTests
             long bundleSize2 = 250;
             long expectedSize = 0;
 
-            var bundleLoc1 = new ResourceLocationBase("sizeTestBundle1", "http://nowhere.com/GetDownloadSize_WithList_CalculatesCachedBundlesBundle1.bundle",
+            var bundleLoc1 = new ResourceLocationBase("sizeTestBundle1", "http://nonExistingUrlForAddressableTests1337.com/GetDownloadSize_WithList_CalculatesCachedBundlesBundle1.bundle",
                 typeof(AssetBundleProvider).FullName, typeof(object));
             var sizeData1 =
                 (bundleLoc1.Data = CreateLocationSizeData("cachedSizeTestBundle1", bundleSize1, 123,
@@ -1177,7 +1458,7 @@ namespace AddressableAssetsIntegrationTests
             if (sizeData1 != null)
                 expectedSize += sizeData1.ComputeSize(bundleLoc1, null);
 
-            var bundleLoc2 = new ResourceLocationBase("cachedSizeTestBundle2", "http://nowhere.com/GetDownloadSize_WithList_CalculatesCachedBundlesBundle2.bundle",
+            var bundleLoc2 = new ResourceLocationBase("cachedSizeTestBundle2", "http://nonExistingUrlForAddressableTests1337.com/GetDownloadSize_WithList_CalculatesCachedBundlesBundle2.bundle",
                 typeof(AssetBundleProvider).FullName, typeof(object));
             var sizeData2 =
                 (bundleLoc2.Data = CreateLocationSizeData("cachedSizeTestBundle2", bundleSize2, 123,
@@ -1440,6 +1721,38 @@ namespace AddressableAssetsIntegrationTests
         }
 
         [UnityTest]
+        public IEnumerator LoadAsset_SuccessfulWhenLoadAssetMode_LoadAllAssets()
+        {
+            yield return Init();
+            if (string.IsNullOrEmpty(TypeName) || TypeName == "BuildScriptFastMode" || TypeName == "BuildScriptVirtualMode")
+            {
+                Assert.Ignore($"Skipping test {nameof(LoadAsset_SuccessfulWhenLoadAssetMode_LoadAllAssets)} for {TypeName}, AssetBundle based test.");
+            }
+
+            string label = AddressablesTestUtility.GetPrefabUniqueLabel("BASE", 0);
+
+            var locationHandle = m_Addressables.LoadResourceLocationsAsync(label);
+            yield return locationHandle;
+            Assert.IsTrue(locationHandle.Result != null, "Failed to get Location for " + label);
+            Assert.AreEqual(1, locationHandle.Result.Count, "Failed to get Location for " + label);
+            IResourceLocation loc = locationHandle.Result[0];
+            Addressables.Release(locationHandle);
+
+            foreach (IResourceLocation dependency in loc.Dependencies)
+            {
+                var locOptions = dependency.Data as AssetBundleRequestOptions;
+                Assert.IsNotNull(locOptions, "Location dependency did not contain expected AssetBundleRequestOptions data");
+                locOptions.AssetLoadMode = AssetLoadMode.AllPackedAssetsAndDependencies;
+            }
+
+            AsyncOperationHandle<GameObject> op = m_Addressables.LoadAssetAsync<GameObject>(loc);
+            yield return op;
+            Assert.AreEqual(AsyncOperationStatus.Succeeded, op.Status, "Loading of " + label + " failed.");
+            Assert.IsTrue(op.Result != null, "Loading of " + label + " was successful, but result was null.");
+            op.Release();
+        }
+
+        [UnityTest]
         public IEnumerator LoadAssetWithWrongType_WhenEntryExists_Fails()
         {
             yield return Init();
@@ -1516,7 +1829,7 @@ namespace AddressableAssetsIntegrationTests
                 Assert.IsTrue(ops.Contains(gop.Result[i]));
             gop.Release();
         }
-        
+
         [UnityTest]
         public IEnumerator LoadAssets_InvokesCallbackPerAssetBeforeCompletedCallback()
         {
@@ -1577,6 +1890,7 @@ namespace AddressableAssetsIntegrationTests
         }
 
         [UnityTest]
+        [Ignore("Test is unstable until task refactor is finished.")]
         public IEnumerator DownloadDependencies_ReturnsValidTask()
         {
             yield return Init();
@@ -1881,6 +2195,96 @@ namespace AddressableAssetsIntegrationTests
                 manualDepNameHashSum += h.DebugName.GetHashCode();
             Assert.AreEqual(manualDepNameHashSum, dependencyNameHashSum, "Calculation of hashcode was not completed as expected.");
         }
+        
+        [UnityTest]
+        public IEnumerator ResourceManagerDiagnostics_CalculateCompletedOperationHashcode_DoesNotErrorOnNullResult()
+        {
+            yield return Init();
+            var rmd = new ResourceManagerDiagnostics(m_Addressables.ResourceManager);
+            var completedOp = m_Addressables.ResourceManager.CreateCompletedOperation<string>(null, "x");
+            int hashcode = rmd.CalculateCompletedOperationHashcode(completedOp);
+            Assert.NotNull(hashcode, "CalculateCompletedOperationHashcode should not error when a completedOperation with a null result is passed in.");
+        }
+
+        [UnityTest]
+        public IEnumerator ResourceManagerDiagnostics_CalculateCompletedOperationHashcode_DoesNotErrorOnEmptyResultList()
+        {
+            yield return Init();
+            var rmd = new ResourceManagerDiagnostics(m_Addressables.ResourceManager);
+            var completedOp = m_Addressables.ResourceManager.CreateCompletedOperation<List<string>>(new List<string>(), null);
+            int hashcode = rmd.CalculateCompletedOperationHashcode(completedOp);
+            Assert.NotNull(hashcode, "CalculateCompletedOperationHashcode should not error when a completedOperation with an empty list is passed in.");
+        }
+        
+        [UnityTest]
+        public IEnumerator ResourceManagerDiagnostics_GenerateCompletedOperationDisplayName_DoesNotErrorOnEmptyResultList()
+        {
+            yield return Init();
+            var rmd = new ResourceManagerDiagnostics(m_Addressables.ResourceManager);
+            var completedOp = m_Addressables.ResourceManager.CreateCompletedOperation<List<string>>(new List<string>(), null);
+            string displayName = rmd.GenerateCompletedOperationDisplayName(completedOp);
+            Assert.NotNull(displayName, "GenerateCompletedOperationDisplayName should not run into issues when an empty string is passed in.");
+        }
+        
+        [UnityTest]
+        public IEnumerator ResourceManagerDiagnostics_GenerateCompletedOperationDisplayName_DoesNotErrorOnTrivialList()
+        {
+            yield return Init();
+            var rmd = new ResourceManagerDiagnostics(m_Addressables.ResourceManager);
+            var list = new List<string>();
+            list.Add("x");
+            var completedOp = m_Addressables.ResourceManager.CreateCompletedOperation<List<string>>(list, null);
+            string displayName = rmd.GenerateCompletedOperationDisplayName(completedOp);
+            Assert.NotNull(displayName, "GenerateCompletedOperationDisplayName should not run into issues when a simple string is passed in.");
+        }
+        
+        [UnityTest]
+        public IEnumerator ResourceManagerDiagnostics_GenerateCompletedOperationDisplayName_DoesNotErrorOnListWithEmptyElement()
+        {
+            yield return Init();
+            var rmd = new ResourceManagerDiagnostics(m_Addressables.ResourceManager);
+            var list = new List<string>();
+            list.Add("");
+            var completedOp = m_Addressables.ResourceManager.CreateCompletedOperation<List<string>>(list, null);
+            string displayName = rmd.GenerateCompletedOperationDisplayName(completedOp);
+            Assert.NotNull(displayName, "GenerateCompletedOperationDisplayName should not run into issues when an empty string is passed in.");
+        }
+        
+        [UnityTest]
+        public IEnumerator ResourceManagerDiagnostics_GenerateCompletedOperationDisplayName_DoesNotErrorOnListWithManyEmptyElements()
+        {
+            yield return Init();
+            var rmd = new ResourceManagerDiagnostics(m_Addressables.ResourceManager);
+            var list = new List<string>();
+            for(int i = 0; i < 20; i++)
+                list.Add("");
+            var completedOp = m_Addressables.ResourceManager.CreateCompletedOperation<List<string>>(list, null);
+            string displayName = rmd.GenerateCompletedOperationDisplayName(completedOp);
+            Assert.NotNull(displayName, "GenerateCompletedOperationDisplayName should not run into issues when many empty strings are passed in.");
+        }
+        
+        [UnityTest]
+        public IEnumerator ResourceManagerDiagnostics_CalculateCompletedOperationDisplayName_DoesNotErrorOnNullResult()
+        {
+            yield return Init();
+            var rmd = new ResourceManagerDiagnostics(m_Addressables.ResourceManager);
+            var completedOp = m_Addressables.ResourceManager.CreateCompletedOperation<string>(null, "x");
+            string displayName = rmd.GenerateCompletedOperationDisplayName(completedOp);
+            Assert.NotNull(displayName, "GenerateCompletedOperationDisplayName should not error when a completedOperation with a null result is passed in.");
+        }
+        
+        [UnityTest]
+        public IEnumerator ResourceManagerDiagnostics_GenerateCompletedOperationDisplayName_DoesNotErrorOnReallyLongList()
+        {
+            yield return Init();
+            var rmd = new ResourceManagerDiagnostics(m_Addressables.ResourceManager);
+            var list = new List<string>();
+            for (int i = 0; i < 20; i++)
+                list.Add("this is a really long string used for illustrative purposes");
+            var completedOp = m_Addressables.ResourceManager.CreateCompletedOperation<List<string>>(list, null);
+            string displayName = rmd.GenerateCompletedOperationDisplayName(completedOp);
+            Assert.NotNull(displayName, "GenerateCompletedOperationDisplayName should not run into issues when a bunch of long strings are passed in.");
+        }
 
         private class DebugNameTestOperation : AsyncOperationBase<string>
         {
@@ -1902,7 +2306,8 @@ namespace AddressableAssetsIntegrationTests
                 m_Dependencies = deps;
             }
 
-            protected override void GetDependencies(List<AsyncOperationHandle> dependencies)
+            /// <inheritdoc />
+            public override void GetDependencies(List<AsyncOperationHandle> dependencies)
             {
                 foreach (var handle in m_Dependencies)
                     dependencies.Add(handle);
@@ -2595,7 +3000,7 @@ namespace AddressableAssetsIntegrationTests
             Assert.AreEqual(AddressablesTestUtility.kMaxWebRequestCount, WebRequestQueue.s_MaxRequest);
         }
 
-        string CreateFakeCachedBundle(string bundleName, string hash)
+        internal static string CreateFakeCachedBundle(string bundleName, string hash)
         {
 #if ENABLE_CACHING
             string fakeCachePath = string.Format("{0}/{1}/{2}", Caching.currentCacheForWriting.path, bundleName, hash);

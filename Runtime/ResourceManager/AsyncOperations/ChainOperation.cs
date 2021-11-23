@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine.ResourceManagement.AsyncOperations;
+using UnityEngine.ResourceManagement.Exceptions;
 using UnityEngine.ResourceManagement.Util;
 
 namespace UnityEngine.ResourceManagement
@@ -14,7 +15,7 @@ namespace UnityEngine.ResourceManagement
         Func<AsyncOperationHandle<TObjectDependency>, AsyncOperationHandle<TObject>> m_Callback;
         Action<AsyncOperationHandle<TObject>> m_CachedOnWrappedCompleted;
         bool m_ReleaseDependenciesOnFailure = true;
-        
+
         public ChainOperation()
         {
             m_CachedOnWrappedCompleted = OnWrappedCompleted;
@@ -22,7 +23,8 @@ namespace UnityEngine.ResourceManagement
 
         protected override string DebugName { get { return $"ChainOperation<{typeof(TObject).Name},{typeof(TObjectDependency).Name}> - {m_DepOp.DebugName}"; } }
 
-        protected override void GetDependencies(List<AsyncOperationHandle> deps)
+        /// <inheritdoc />
+        public override void GetDependencies(List<AsyncOperationHandle> deps)
         {
             if (m_DepOp.IsValid())
                 deps.Add(m_DepOp);
@@ -37,7 +39,8 @@ namespace UnityEngine.ResourceManagement
             RefreshDownloadStatus();
         }
 
-        internal override bool InvokeWaitForCompletion()
+        ///<inheritdoc />
+        protected override bool InvokeWaitForCompletion()
         {
             if (IsDone)
                 return true;
@@ -45,7 +48,7 @@ namespace UnityEngine.ResourceManagement
             if (!m_DepOp.IsDone)
                 m_DepOp.WaitForCompletion();
 
-            m_RM?.Update(Time.deltaTime);
+            m_RM?.Update(Time.unscaledDeltaTime);
 
             if (!HasExecuted)
                 InvokeExecute();
@@ -65,10 +68,10 @@ namespace UnityEngine.ResourceManagement
 
         private void OnWrappedCompleted(AsyncOperationHandle<TObject> x)
         {
-            string errorMsg = string.Empty;
+            OperationException ex = null;
             if (x.Status == AsyncOperationStatus.Failed)
-                errorMsg = string.Format("ChainOperation of Type: {0} failed because dependent operation failed\n{1}", typeof(TObject), x.OperationException != null ? x.OperationException.Message : string.Empty);
-            Complete(m_WrappedOp.Result, x.Status == AsyncOperationStatus.Succeeded, errorMsg, m_ReleaseDependenciesOnFailure);
+                ex = new OperationException($"ChainOperation failed because dependent operation failed", x.OperationException);
+            Complete(m_WrappedOp.Result, x.Status == AsyncOperationStatus.Succeeded, ex, m_ReleaseDependenciesOnFailure);
         }
 
         protected override void Destroy()
@@ -141,7 +144,8 @@ namespace UnityEngine.ResourceManagement
 
         protected override string DebugName { get { return $"ChainOperation<{typeof(TObject).Name}> - {m_DepOp.DebugName}"; } }
 
-        protected override void GetDependencies(List<AsyncOperationHandle> deps)
+        /// <inheritdoc />
+        public override void GetDependencies(List<AsyncOperationHandle> deps)
         {
             if (m_DepOp.IsValid())
                 deps.Add(m_DepOp);
@@ -156,7 +160,8 @@ namespace UnityEngine.ResourceManagement
             RefreshDownloadStatus();
         }
 
-        internal override bool InvokeWaitForCompletion()
+        ///<inheritdoc />
+        protected override bool InvokeWaitForCompletion()
         {
             if (IsDone)
                 return true;
@@ -164,7 +169,7 @@ namespace UnityEngine.ResourceManagement
             if (!m_DepOp.IsDone)
                 m_DepOp.WaitForCompletion();
 
-            m_RM?.Update(Time.deltaTime);
+            m_RM?.Update(Time.unscaledDeltaTime);
 
             if (!HasExecuted)
                 InvokeExecute();
@@ -184,10 +189,10 @@ namespace UnityEngine.ResourceManagement
 
         private void OnWrappedCompleted(AsyncOperationHandle<TObject> x)
         {
-            string errorMsg = string.Empty;
+            OperationException ex = null;
             if (x.Status == AsyncOperationStatus.Failed)
-                errorMsg = string.Format("ChainOperation of Type: {0} failed because dependent operation failed\n{1}", typeof(TObject), x.OperationException != null ? x.OperationException.Message : string.Empty);
-            Complete(m_WrappedOp.Result, x.Status == AsyncOperationStatus.Succeeded, errorMsg, m_ReleaseDependenciesOnFailure);
+                ex = new OperationException($"ChainOperation failed because dependent operation failed", x.OperationException);
+            Complete(m_WrappedOp.Result, x.Status == AsyncOperationStatus.Succeeded, ex, m_ReleaseDependenciesOnFailure);
         }
 
         protected override void Destroy()

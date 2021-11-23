@@ -22,6 +22,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         void SetWaitForCompletionCallback(Func<bool> callback);
     }
 
+    [UnityEngine.Scripting.Preserve]
     internal class ProviderOperation<TObject> : AsyncOperationBase<TObject>, IGenericProviderOperation, ICachable
     {
         private bool m_ReleaseDependenciesOnFailure = true;
@@ -36,7 +37,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         private IResourceLocation m_Location;
         private int m_ProvideHandleVersion;
         private bool m_NeedsRelease;
-        int ICachable.Hash { get; set; }
+        IOperationCacheKey ICachable.Key { get; set; }
         private ResourceManager m_ResourceManager;
         private const float k_OperationWaitingToCompletePercentComplete = 0.99f;
         public int ProvideHandleVersion { get { return m_ProvideHandleVersion; } }
@@ -53,7 +54,8 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             m_WaitForCompletionCallback = callback;
         }
 
-        internal override bool InvokeWaitForCompletion()
+        ///<inheritdoc />
+        protected  override bool InvokeWaitForCompletion()
         {
             if (IsDone)
                 return true;
@@ -61,9 +63,11 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
                 m_DepOp.WaitForCompletion();
             if (m_WaitForCompletionCallback == null)
                 return false;
-            m_RM?.Update(Time.deltaTime);
+            m_RM?.Update(Time.unscaledDeltaTime);
             if (!HasExecuted)
                 InvokeExecute();
+            if (m_WaitForCompletionCallback == null)
+                return false;
             return m_WaitForCompletionCallback.Invoke();
         }
 
@@ -84,7 +88,8 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         {
         }
 
-        protected override void GetDependencies(List<AsyncOperationHandle> deps)
+        /// <inheritdoc />
+        public override void GetDependencies(List<AsyncOperationHandle> deps)
         {
             if (m_DepOp.IsValid())
                 deps.Add(m_DepOp);
@@ -148,6 +153,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             m_ProvideHandleVersion++;
             m_GetProgressCallback = null;
             m_GetDownloadProgressCallback = null;
+            m_WaitForCompletionCallback = null;
             m_NeedsRelease = status;
 
             ProviderOperation<T> top = this as ProviderOperation<T>;
@@ -170,7 +176,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
                 throw new Exception(errorMsg);
             }
 
-            Complete(Result, status, e != null ? e.Message : string.Empty, m_ReleaseDependenciesOnFailure);
+            Complete(Result, status, e, m_ReleaseDependenciesOnFailure);
         }
 
         protected override float Progress
