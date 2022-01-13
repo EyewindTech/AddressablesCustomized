@@ -151,10 +151,10 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
         /// </summary>
         public void WaitForCompletion()
         {
-            if (Application.platform != RuntimePlatform.WebGLPlayer)
-                while (!InvokeWaitForCompletion()) { }
+            if (PlatformUtilities.PlatformUsesMultiThreading(Application.platform))
+                while (!InvokeWaitForCompletion()) {}
             else
-                throw new Exception($"WebGL does not support synchronous Addressable loading.  Please do not use WaitForCompletion on the WebGL platform.");
+                throw new Exception($"{Application.platform} does not support synchronous Addressable loading.  Please do not use WaitForCompletion on the {Application.platform} platform.");
         }
 
         /// <summary>
@@ -209,7 +209,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             {
                 if (m_taskCompletionSource == null)
                 {
-                    m_taskCompletionSource = new TaskCompletionSource<TObject>();
+                    m_taskCompletionSource = new TaskCompletionSource<TObject>(TaskCreationOptions.RunContinuationsAsynchronously);
                     if (IsDone && !CompletedEventHasListeners)
                         m_taskCompletionSource.SetResult(Result);
                 }
@@ -224,7 +224,7 @@ namespace UnityEngine.ResourceManagement.AsyncOperations
             {
                 if (m_taskCompletionSourceTypeless == null)
                 {
-                    m_taskCompletionSourceTypeless = new TaskCompletionSource<object>();
+                    m_taskCompletionSourceTypeless = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
                     if (IsDone && !CompletedEventHasListeners)
                         m_taskCompletionSourceTypeless.SetResult(Result);
                 }

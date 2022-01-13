@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
@@ -352,14 +353,15 @@ namespace AddressableTests.SyncAddressables
             m_Addressables.Release(depOp);
         }
 
-        [Test]
-        public void CleanBundleCache_CompletesSynchronously()
+        [TestCase(true)]
+        [TestCase(false)]
+        public void CleanBundleCache_CompletesSynchronously(bool forceSingleThreading)
         {
 #if ENABLE_CACHING
             if (BuildScriptMode == TestBuildScriptMode.Fast || BuildScriptMode == TestBuildScriptMode.Virtual)
                 Assert.Ignore("Bundle caching does not occur when using this playmode.");
 
-            var cleanOp = m_Addressables.CleanBundleCache(null);
+            var cleanOp = m_Addressables.CleanBundleCache(null, forceSingleThreading);
             cleanOp.WaitForCompletion();
 
             Assert.AreEqual(AsyncOperationStatus.Succeeded, cleanOp.Status);
@@ -384,46 +386,94 @@ namespace AddressableTests.SyncAddressables
     //This class is made because of, and should be refactored away when resolved, bug: https://jira.unity3d.com/browse/ADDR-1215
     public abstract class SyncAddressablesWithSceneTests : SyncAddressableTests
     {
-        [Test]
-        public void LoadingScene_CompletesSynchronously()
+        [UnityTest]
+        public IEnumerator LoadingScene_Synchronously_ActivateOnLoadDisabled_Completes()
         {
-            var loadOp = m_Addressables.LoadSceneAsync(m_SceneKey, LoadSceneMode.Additive);
+            var loadOp = m_Addressables.LoadSceneAsync(m_SceneKey, LoadSceneMode.Additive, false);
+            bool callbackCompleted = false;
+            loadOp.Completed += handle => callbackCompleted = true;
             var result = loadOp.WaitForCompletion();
+
+            Assert.IsTrue(callbackCompleted, "When activateOnLoad is disabled, scene load operation expected to complete in WaitForCompletion");
             Assert.AreEqual(AsyncOperationStatus.Succeeded, loadOp.Status);
             Assert.IsNotNull(result);
             Assert.IsTrue(loadOp.IsDone);
             Assert.AreEqual(loadOp.Result, result);
+            Assert.IsTrue(Mathf.Approximately(result.m_Operation.progress, 0.9f), "SceneLoading WaitForCompletion expected to end on 0.9 activation");
+
+            // complete the activation step
+            yield return result.ActivateAsync();
+            yield return loadOp;
 
             //Cleanup
-            m_Addressables.UnloadSceneAsync(loadOp).WaitForCompletion();
+            var unloadHandle = m_Addressables.UnloadSceneAsync(loadOp);
+            yield return unloadHandle;
             ReleaseOp(loadOp);
         }
 
-        [Test]
-        public void UnloadingScene_CompletesSynchronously_WhenAutoReleasingHandle()
+        [UnityTest]
+        public IEnumerator LoadingScene_Synchronously_ActivateOnLoad_CompletesAsynchronously()
         {
-            var loadOp = m_Addressables.LoadSceneAsync(m_SceneKey, LoadSceneMode.Additive);
-            loadOp.WaitForCompletion();
+            var loadOp = m_Addressables.LoadSceneAsync(m_SceneKey, LoadSceneMode.Additive, true);
+            bool callbackCompleted = false;
+            loadOp.Completed += handle => callbackCompleted = true;
+            var result = loadOp.WaitForCompletion();
+            Assert.IsNotNull(result);
+            Assert.AreEqual(AsyncOperationStatus.None, loadOp.Status);
+            Assert.IsFalse(loadOp.IsDone);
+            Assert.IsFalse(callbackCompleted, "When activateOnLoad is enabled, scene load operation expected to complete after asynchronous activation");
+            Assert.IsTrue(Mathf.Approximately(result.m_Operation.progress, 0.9f), "SceneLoading WaitForCompletion expected to end on 0.9 activation");
 
-            var unloadOp = m_Addressables.UnloadSceneAsync(loadOp);
-            unloadOp.WaitForCompletion();
-            Assert.IsTrue(unloadOp.IsDone);
+            // complete the activation step
+            yield return loadOp;
+            Assert.IsTrue(callbackCompleted, "When activateOnLoad is enabled, scene load operation expected to complete after asynchronous activation");
+            Assert.AreEqual(AsyncOperationStatus.Succeeded, loadOp.Status);
+            Assert.IsTrue(result.m_Operation.isDone);
+            Assert.AreEqual(loadOp.Result.Scene, result.Scene);
+
+            //Cleanup
+            var unloadHandle = m_Addressables.UnloadSceneAsync(loadOp);
+            yield return unloadHandle;
+            ReleaseOp(loadOp);
         }
 
-        [Test]
-        public void UnloadingScene_CompletesSynchronously()
+        [UnityTest]
+        public IEnumerator UnloadingScene_Synchronously_WhenAutoReleasingHandle_LogsWarning()
         {
             var loadOp = m_Addressables.LoadSceneAsync(m_SceneKey, LoadSceneMode.Additive);
             loadOp.WaitForCompletion();
+            yield return loadOp;
+
+            var unloadOp = m_Addressables.UnloadSceneAsync(loadOp);
+            LogAssert.Expect(LogType.Warning, "Cannot unload a Scene with WaitForCompletion. Scenes must be unloaded asynchronously.");
+            unloadOp.WaitForCompletion();
+            yield return unloadOp;
+
+            Assert.IsFalse(unloadOp.IsValid());
+            Assert.IsTrue(unloadOp.IsDone);
+
+            ReleaseOp(loadOp);
+        }
+
+        [UnityTest]
+        public IEnumerator UnloadingScene_Synchronously_LogsWarning()
+        {
+            var loadOp = m_Addressables.LoadSceneAsync(m_SceneKey, LoadSceneMode.Additive);
+            loadOp.WaitForCompletion();
+            yield return loadOp;
 
             var unloadOp = m_Addressables.UnloadSceneAsync(loadOp, UnloadSceneOptions.None, false);
-            var result = unloadOp.WaitForCompletion();
+            LogAssert.Expect(LogType.Warning, "Cannot unload a Scene with WaitForCompletion. Scenes must be unloaded asynchronously.");
+            unloadOp.WaitForCompletion();
+            yield return unloadOp;
+
             Assert.AreEqual(AsyncOperationStatus.Succeeded, unloadOp.Status);
+            Assert.IsTrue(unloadOp.IsValid());
             Assert.IsTrue(unloadOp.IsDone);
-            Assert.AreEqual(unloadOp.Result, result);
 
             //Cleanup
             ReleaseOp(unloadOp);
+            ReleaseOp(loadOp);
         }
     }
 
@@ -453,7 +503,7 @@ namespace AddressableTests.SyncAddressables
 
     class SyncAddressableTests_PackedPlaymodeMode : SyncAddressablesWithSceneTests
     {
-        protected override TestBuildScriptMode BuildScriptMode { get { return TestBuildScriptMode.PackedPlaymode; } } 
+        protected override TestBuildScriptMode BuildScriptMode { get { return TestBuildScriptMode.PackedPlaymode; } }
         [Test]
         public void DownloadDependencies_CompletesSynchronously_WhenAutoReleased()
         {
@@ -462,12 +512,12 @@ namespace AddressableTests.SyncAddressables
             Assert.IsTrue(downloadDependencies.IsDone);
         }
     }
-#endif 
+#endif
 
     [UnityPlatform(exclude = new[] { RuntimePlatform.WindowsEditor, RuntimePlatform.OSXEditor, RuntimePlatform.LinuxEditor })]
     class SyncAddressableTests_PackedMode : SyncAddressableTests
     {
-        protected override TestBuildScriptMode BuildScriptMode { get { return TestBuildScriptMode.Packed; } } 
+        protected override TestBuildScriptMode BuildScriptMode { get { return TestBuildScriptMode.Packed; } }
 
         [Test]
         public void DownloadDependencies_CompletesSynchronously_WhenAutoReleased()

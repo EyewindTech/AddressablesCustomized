@@ -4,6 +4,44 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.19.17] - 2022-1-6
+- New Projects use hierarchical search mode as the default option for Group search.
+- Group referenced by Addressable Schema can now be viewed, but not edited, in the inspector
+- Fixed issue where calling Addressables.CleanBundleCache freezes the WebGL player.
+- Fixed API inconsistency in CheckForCatalogUpdates.  The API wasn't initializing Addressables if it was the first point of contact in the system.
+- Fix issue where opening the Analyze window logs null exceptions after running the "Check Duplicate Bundle Dependencies" rule.
+- Add platform type to ""Use Existing Build"" display name in the Addressables Groups > Play Mode Script menu."
+- Fixed issue where Scene loading after a content update could result in "RemoteProviderException : Invalid path in AssetBundleProvider: ''.". Fix require a new addressables_content_state.bin to be created."
+- Tests for the addressables package are no longer included. These can still be accessed upon request.
+- Fixed an issue where calling WaitForCompletion on LoadSceneAsync would sometimes cause a freeze
+- Mentioned the AssetBundle loading cache in the docs
+- Fixed issue where using WaitForCompletion and loading an AssetBundle through a UnityWebRequest freezes the editor when using 2021.2+.
+- Fixed issue where using WaitForCompletion and exceeding the max number of concurrent web requests freezes the editor."
+- Updated the docs to use the correct name for the Analyze rule "Bundle Layout Preview"
+- Fixed issue where Addressable Asset Entry cached data is not cleared during external changes in some editor versions.
+## [1.19.15] - 2021-12-2
+- Fix issue where opening the Analyze window logs null exceptions after running the "Check Duplicate Bundle Dependencies" rule.
+
+## [1.19.13] - 2021-11-29
+- Removed AddressableAssetEntryCollection upgrade check on opening project. Improving startup performance.
+- Fixed issue where GetAllAsset with includeSubObjects did not get subObjects within Assets in an Addressable folder.
+- Improved Groups window label dropdown. Adding the ability to search labels and add new labels from the dropdown.
+- Added ability Assets from Analyze window, using double click and right click options on the results.
+- Improved performance when displaying Addressables header for selected Assets.
+- Fixed issue where Groups not marked as "Include in build" was being including in analyse rules.
+- Fixed issue where WaitForCompletion will complete Scene operations, where Scenes require further asynchronous loading to complete correctly.
+- Fixed issue where AssetDatabaseProvider.LoadAssetAtPath causes a null exception if the asset is not in the AssetDatabase.
+- Fixed issue where "Reentering the Update method is not allowed" exception occurs when calling WaitForCompletion during an async method.
+- Added FAQ documentation for internal Bundle Id and Asset naming modes.
+- Added documentation describing behaviour of WaitForCompletion of Scenes.
+- Added documentation for how script changes affect builds.
+- Added documentation about Windows file path limit affecting content builds
+- Added note about Sprite Atlas options in the documentation.
+- Added Sample for custom build and play mode scripts
+- Fixed issue where Editor assets were getting included in a build for certain platforms due to path separator character mis-match
+- Fix issue with using custom AssetBundleProvider with custom AssetBundleResource.
+- Fixed issue where editor hosting profile variables were serialized to AddressableAssetSettings.
+
 ## [1.19.11] - 2021-10-23
 - Fixed issue with missing reference exception when using addressables where content has not been built.
 - Added warning that LZMA compression is not available for WebGL AssetBundles.
@@ -1046,3 +1084,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [0.0.8-preview] - 2018-02-08
 - Initial submission for package distribution
+
+
+
+
