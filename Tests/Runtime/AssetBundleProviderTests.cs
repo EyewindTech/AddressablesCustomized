@@ -10,10 +10,12 @@ using UnityEditor.AddressableAssets.Settings.GroupSchemas;
 #endif
 using UnityEngine;
 using UnityEngine.AddressableAssets;
+using UnityEngine.Networking;
 using UnityEngine.ResourceManagement;
 using UnityEngine.ResourceManagement.AsyncOperations;
 using UnityEngine.ResourceManagement.ResourceLocations;
 using UnityEngine.ResourceManagement.ResourceProviders;
+using UnityEngine.ResourceManagement.Util;
 using UnityEngine.SceneManagement;
 using UnityEngine.TestTools;
 
@@ -217,9 +219,48 @@ namespace AddressableTests.SyncAddressables
                 expectedPath = internalId.StartsWith("jar") ? internalId : "file:///" + Path.GetFullPath(internalId);
             }
             Assert.AreEqual(expectedPath, path);
+		}
+
+        [UnityTest]
+        public IEnumerator LoadBundleAsync_WithUnfinishedUnload_WaitsForUnloadAndCompletes()
+        {
+            var h = m_Addressables.LoadAssetAsync<GameObject>("testprefab");
+            yield return h;
+            Assert.IsNotNull(h.Result);
+            h.Release();
+            h = m_Addressables.LoadAssetAsync<GameObject>("testprefab");
+            yield return h;
+            Assert.IsNotNull(h.Result);
+            h.Release();
+        }
+
+        [UnityTest]
+        public IEnumerator LoadBundleSync_WithUnfinishedUnload_WaitsForUnloadAndCompletes()
+        {
+            var h = m_Addressables.LoadAssetAsync<GameObject>("testprefab");
+            yield return h;
+            Assert.IsNotNull(h.Result);
+            h.Release();
+            h = m_Addressables.LoadAssetAsync<GameObject>("testprefab");
+            h.WaitForCompletion();
+            Assert.IsNotNull(h.Result);
+            h.Release();
+        }
+
+        [Test]
+        // Only testing against important errors instead of full list
+        [TestCase("", true)]
+        [TestCase("Unknown error", true)]
+        [TestCase("Request aborted", false)]
+        [TestCase("Unable to write data", false)]
+        public void UnityWebRequestResult_ShouldRetryReturnsExpected(string error, bool expected)
+        {
+            UnityWebRequestResult rst = new UnityWebRequestResult(new UnityWebRequest());
+            rst.Error = error;
+            bool result = rst.ShouldRetryDownloadError();
+            Assert.AreEqual(expected, result, "Unexpected retry value for the input error.");
         }
     }
-
 #if UNITY_EDITOR
     class AssetBundleProviderTests_PackedPlaymodeMode : AssetBundleProviderTests { protected override TestBuildScriptMode BuildScriptMode { get { return TestBuildScriptMode.PackedPlaymode; } } }
 #endif

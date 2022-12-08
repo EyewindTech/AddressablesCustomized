@@ -1,3 +1,7 @@
+---
+uid: synchronous-addressables
+---
+
 ## Synchronous Workflow
 Synchronous Addressables APIs help to more closely mirror Unity asset loading workflows.  `AsyncOperationHandles` now have a method called `WaitForCompletion()` that force the async operation to complete and return the `Result` of the operation.
 
@@ -49,8 +53,12 @@ IEnumerator LoadScene(string myScene)
 > [!NOTE]
 > Unloading a scene cannot be completed synchronously. Calling WaitForCompleted on a scene unload will not unload the scene or any assets, and a warning will be logged to the console.
 
+>[!NOTE]
+>Due to limitations with Scene integration on the main thread through the `SceneManager` API, it is possible to lock the Editor or Player when calling `WaitForCompletion` in association with scene loading.  The issue primarily surfaces when loading two scenes in succession, with the second scene load request having `WaitForCompletion` called from its `AsyncOperationHandle`.  Since scene loading takes extra frames to fully integrate on the main thread, and `WaitForCompletion` locks the main thread, you could hit a situation where Addressables has been informed by the `SceneManager` that the first scene is fully loaded, even though it hasn't completed finished all the required operations.  At this point, the scene is fully loaded, but the `SceneManager` attempts to call `UnloadUnusedAssets`, on the main thread, if the scene was loaded in `Single` mode.  Then, the second scene load request locks the main thread with `WaitForCompletion`, but cannot begin loading because `SceneManager` requires the `UnloadUnusedAssets` to complete before the next scene can begin loading.
+>In order to avoid this deadlock, it is advised that you either load successive scenes asynchronously, or ensure a sufficient delay is added between scene load requests.
+
 ### Synchronous Addressables with Custom Operations
-Addressables supports custom `AsyncOperations` which support unique implementations of `InvokeWaitForCompletion`.  This overridable method is what you'll use to implement custom synchronous operations.
+Addressables supports custom `AsyncOperations` which support unique implementations of `InvokeWaitForCompletion`.  This method can be overridden to implement custom synchronous operations.
 
 Custom operations work with `ChainOperations` and `GroupsOperations`.  If you require chained operations to be completed synchronously, ensure that your custom operations implement `InvokeWaitForCompletion` and create a `ChainOperation` using your custom operations.  Similarly, `GroupOperations` are well suited to ensure a collection of `AsyncOperations`, including custom operations, complete together.  Both `ChainOperation` and `GroupOperation` have their own implementations of `InvokeWaitForCompletion` that relies on the `InvokeWaitForCompletion` implementations of the operations they depend on.
 
